@@ -1,0 +1,275 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .dual_gpm import DualGPM
+from .spatial_block import spatial_subband_im2col, num_subbands
+from src.utils.svd_utils import topk_right_singular
+
+
+class ODRLoRAConv2d(nn.Module):
+    """
+    ODR-LoRA 卷积层：共享基座 + 动态低秩分支 + 空间/频率/尺度感知正交。
+
+    权重形状：[C_out, C_in, K, K]
+    内部展平为 [C_out, d]，d = C_in * K * K。
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        stride=1,
+        padding=None,
+        bias=True,
+        share_rank=8,
+        private_rank=8,
+        spatial_blocks=(2, 2),
+        spatial_sample_ratio=0.1,
+        freq_level=2,                # 1 -> 4 子带，2 -> 7 子带
+        adaptive_lambda_min=0.5,
+        adaptive_lambda_max=1.0,
+        skip_orthogonal=True,
+        share_subspace=True,
+        layer_scale=1.0,
+        rank_gamma=1.5,
+        rank_min=4,
+        rank_max=32,
+        dual_gpm_eps=0.99,
+    ):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding if padding is not None else kernel_size // 2
+        self.share_rank = share_rank
+        self.spatial_blocks = spatial_blocks
+        self.spatial_sample_ratio = spatial_sample_ratio
+        self.freq_level = freq_level
+        self.freq_bands = num_subbands(level=freq_level)
+        self.adaptive_lambda_min = adaptive_lambda_min
+        self.adaptive_lambda_max = adaptive_lambda_max
+        self.skip_orthogonal = skip_orthogonal
+        self.share_subspace = share_subspace
+        self.rank_gamma = rank_gamma
+        self.rank_min = rank_min
+        self.rank_max = rank_max
+        self.layer_scale = layer_scale
+        self.dual_gpm_eps = dual_gpm_eps
+
+        # 根据尺度计算 private rank
+        self.private_rank = self._compute_rank(private_rank)
+        self.total_rank = self.share_rank + self.private_rank
+        d = in_channels * kernel_size * kernel_size
+        self.d = d
+
+        # 基座权重
+        self.weight = nn.Parameter(
+            torch.empty(out_channels, in_channels, kernel_size, kernel_size)
+        )
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        # 共享子空间基 B_share: [share_rank, d]
+        if share_subspace:
+            self.register_buffer(
+                'B_share',
+                torch.zeros(share_rank, d)
+            )
+            self.share_initialized = False
+        else:
+            self.B_share = None
+            self.share_initialized = False
+
+        # 任务专属分支：每个任务一个 (A_t, B_t)
+        # A_t: [C_out, total_rank]
+        # B_t: [total_rank, d]，前 share_rank 行来自 B_share，后 private_rank 行是私有基
+        self.task_A = nn.ParameterList()
+        self.task_B = nn.ParameterList()
+        self.task_ids = []
+
+        # DualGPM: 每空间块、每子带一个
+        grid_h, grid_w = spatial_blocks
+        n_sub = self.freq_bands
+        self.dual_gpms = {}
+        for g in range(grid_h * grid_w):
+            for f in range(n_sub):
+                self.dual_gpms[(g, f)] = DualGPM(
+                    dim=d,
+                    eps=dual_gpm_eps,
+                    max_basis=None,
+                    use_orthogonal_complement=False,
+                )
+
+        self.current_task_idx = -1
+        self._init_weights()
+
+    def _compute_rank(self, base_rank):
+        r = base_rank * (self.layer_scale ** self.rank_gamma)
+        r = int(round(r))
+        return max(self.rank_min, min(self.rank_max, r))
+
+    def _init_weights(self):
+        nn.init.kaiming_normal_(
+            self.weight, mode='fan_out', nonlinearity='relu'
+        )
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
+        if self.B_share is not None:
+            nn.init.orthogonal_(self.B_share)
+
+    # ---------- 任务管理 ----------
+    def add_task(self):
+        """新增一个任务分支，返回任务索引。"""
+        d = self.d
+        A = nn.Parameter(torch.zeros(self.out_channels, self.total_rank))
+        B = nn.Parameter(torch.zeros(self.total_rank, d))
+        # 前 share_rank 行从 B_share 复制（若已初始化）
+        if self.B_share is not None and self.share_initialized:
+            B.data[:self.share_rank] = self.B_share.data
+        self.task_A.append(A)
+        self.task_B.append(B)
+        idx = len(self.task_A) - 1
+        self.task_ids.append(idx)
+        return idx
+
+    def set_current_task(self, idx):
+        self.current_task_idx = idx
+
+    def freeze_base_and_old(self, current_idx):
+        """冻结基座和旧任务分支，只训练当前任务 A。"""
+        self.weight.requires_grad = False
+        if self.bias is not None:
+            self.bias.requires_grad = False
+        if self.B_share is not None:
+            self.B_share.requires_grad = False
+        for i, (A, B) in enumerate(zip(self.task_A, self.task_B)):
+            if i < current_idx:
+                A.requires_grad = False
+                B.requires_grad = False
+            elif i == current_idx:
+                A.requires_grad = True
+                B.requires_grad = False
+            else:
+                A.requires_grad = False
+                B.requires_grad = False
+
+    # ---------- 校准：计算 B_t ----------
+    @torch.no_grad()
+    def calibrate(self, x, current_idx, task_similarity=0.0):
+        """
+        用当前任务输入 x 校准该层的 B_t。
+        x: [B, C_in, H, W]
+        current_idx: 当前任务索引
+        task_similarity: 与旧任务最大相似度 s_t
+        """
+        self.eval()
+        if current_idx >= len(self.task_B):
+            return
+        B = self.task_B[current_idx]
+        grid_h, grid_w = self.spatial_blocks
+
+        # 1. 空间分块 + 多级 DWT + im2col + 子采样
+        pairs = spatial_subband_im2col(
+            x,
+            grid_h, grid_w,
+            self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            level=self.freq_level,
+            sample_ratio=self.spatial_sample_ratio,
+        )
+        # pairs: list of (g, f, H_sub)
+
+        # 2. 对每个子带做正交投影
+        H_hats = []
+        for g, f, H_sub in pairs:
+            gpm = self.dual_gpms[(g, f)]
+            if gpm.basis is not None:
+                lam = self.adaptive_lambda_min + \
+                      (self.adaptive_lambda_max - self.adaptive_lambda_min) * (1.0 - task_similarity)
+                H_hat = H_sub - (1.0 - lam) * gpm.project_in(H_sub)
+            else:
+                H_hat = H_sub
+            H_hats.append(H_hat)
+
+        if len(H_hats) == 0:
+            return
+
+        # 3. 按列拼接所有子带投影后的输入
+        H_all = torch.cat(H_hats, dim=1)  # [d, sum_n]
+        if H_all.numel() == 0 or H_all.shape[1] == 0:
+            return
+
+        # 4. 若有共享子空间，先减掉共享基张成的空间
+        if self.B_share is not None and self.share_initialized:
+            Bs = self.B_share  # [r_share, d]
+            proj = Bs.T @ (Bs @ H_all)
+            H_all_private = H_all - proj
+        else:
+            H_all_private = H_all
+
+        # 5. SVD 取 top-private_rank 右奇异向量
+        H_all_private = H_all_private.float()
+        if H_all_private.shape[1] == 0:
+            return
+        V = topk_right_singular(H_all_private.T, self.private_rank, method='random')
+        # V: [private_rank, d]
+        B.data[self.share_rank:] = V.to(B.dtype)
+
+        # 6. 如果尚未初始化共享基，用当前 H_all 的主成分初始化
+        if self.B_share is not None and not self.share_initialized:
+            V_share = topk_right_singular(H_all.T, self.share_rank, method='random')
+            self.B_share.data.copy_(V_share.to(self.B_share.dtype))
+            B.data[:self.share_rank] = self.B_share.data
+            self.share_initialized = True
+
+    @torch.no_grad()
+    def update_gpm(self, x, current_idx):
+        """训练完当前任务后，用当前任务输入更新 DualGPM。"""
+        self.eval()
+        grid_h, grid_w = self.spatial_blocks
+        pairs = spatial_subband_im2col(
+            x,
+            grid_h, grid_w,
+            self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            level=self.freq_level,
+            sample_ratio=self.spatial_sample_ratio,
+        )
+        for g, f, H_sub in pairs:
+            gpm = self.dual_gpms[(g, f)]
+            gpm.update(H_sub)
+
+    # ---------- 前向 ----------
+    def forward(self, x, task_idx=None):
+        if task_idx is None:
+            task_idx = self.current_task_idx
+        # 基座卷积
+        out = F.conv2d(
+            x, self.weight, self.bias,
+            stride=self.stride, padding=self.padding
+        )
+        # 加上任务分支
+        if task_idx >= 0 and task_idx < len(self.task_A):
+            A = self.task_A[task_idx]  # [C_out, total_rank]
+            B = self.task_B[task_idx]  # [total_rank, d]
+            W_task = A @ B  # [C_out, d]
+            W_task = W_task.view(self.out_channels, self.in_channels,
+                                 self.kernel_size, self.kernel_size)
+            out = out + F.conv2d(x, W_task, None, stride=self.stride, padding=self.padding)
+        return out
+
+    def merge_task(self, task_idx):
+        """把任务分支合并进基座权重（推理时使用）。"""
+        with torch.no_grad():
+            if task_idx >= 0 and task_idx < len(self.task_A):
+                A = self.task_A[task_idx]
+                B = self.task_B[task_idx]
+                W_task = A @ B
+                self.weight.data += W_task.view_as(self.weight)

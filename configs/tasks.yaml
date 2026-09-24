@@ -1,0 +1,42 @@
+task_order:
+  - derain
+  - dehaze
+  - deblur
+  - denoise
+  - lowlight
+
+datasets:
+  derain:
+    name: Rain100H
+    train_dir: Rain100H/train
+    val_dir: Rain100H/test
+    input_pattern: "*"
+    gt_pattern: "*"
+
+  dehaze:
+    name: Haze4K
+    train_dir: Haze4K/train
+    val_dir: Haze4K/test
+    input_pattern: "*"
+    gt_pattern: "*"
+
+  deblur:
+    name: GoPro
+    train_dir: GoPro/train
+    val_dir: GoPro/test
+    input_pattern: "*"
+    gt_pattern: "*"
+
+  denoise:
+    name: DIV2K_BSD68
+    train_dir: DIV2K_BSD68/train
+    val_dir: DIV2K_BSD68/test
+    input_pattern: "*"
+    gt_pattern: "*"
+
+  lowlight:
+    name: LSRW
+    train_dir: LSRW/train
+    val_dir: LSRW/test
+    input_pattern: "*"
+    gt_pattern: "*"

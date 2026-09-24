@@ -1,0 +1,80 @@
+experiment:
+  name: odr_lora_default
+  output_dir: ./outputs
+  seed: 42
+  device: cuda
+
+data:
+  root: ./data
+  tasks:
+    - name: derain
+      dataset: Rain100H
+      train_split: train
+      val_split: test
+      patch_size: 256
+      batch_size: 8
+    - name: dehaze
+      dataset: Haze4K
+      train_split: train
+      val_split: test
+      patch_size: 256
+      batch_size: 8
+    - name: deblur
+      dataset: GoPro
+      train_split: train
+      val_split: test
+      patch_size: 256
+      batch_size: 8
+    - name: denoise
+      dataset: DIV2K_BSD68
+      train_split: train
+      val_split: test
+      patch_size: 256
+      batch_size: 8
+    - name: lowlight
+      dataset: LSRW
+      train_split: train
+      val_split: test
+      patch_size: 256
+      batch_size: 8
+
+model:
+  backbone: NAFNet
+  base_channels: 32
+  num_blocks: [2, 4, 8, 4, 2]
+  kernel_size: 3
+  share_rank: 8
+  private_rank_base: 8
+  rank_gamma: 1.5
+  rank_min: 4
+  rank_max: 32
+
+odr_lora:
+  spatial_blocks: [2, 2]
+  spatial_sample_ratio: 0.1
+  freq_level: 2          # 1 -> 4 子带；2 -> 7 子带
+  freq_bands: 7          # 与 freq_level=2 对应
+  freq_decomp: dwt       # 使用多级 Haar DWT
+  adaptive_lambda_min: 0.5
+  adaptive_lambda_max: 1.0
+  skip_orthogonal: true
+  share_subspace: true
+
+train:
+  epochs_per_task: 400
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 10
+  grad_clip: 1.0
+  loss:
+    l1: 1.0
+    perceptual: 0.1
+    orth: 0.01
+    freq: 0.01
+    share: 0.001
+    freq_sel: 0.001
+
+eval:
+  metrics: [psnr, ssim, lpips]
+  save_images: false
