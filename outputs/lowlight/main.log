@@ -1,0 +1,36 @@
+2026-10-08 12:14:36 | INFO | main | 配置文件: /root/code/odr-lora-restoration/configs/test_lowlight.yaml
+2026-10-08 12:14:36 | INFO | main | 随机种子: 42
+2026-10-08 12:14:36 | INFO | main | 设备: cuda
+2026-10-08 12:14:36 | INFO | main | 频带级别 freq_level: 1
+2026-10-08 12:14:36 | INFO | main | 频带数量 freq_bands: 4
+2026-10-08 12:14:36 | INFO | main | 空间分块 spatial_blocks: [1, 1]
+2026-10-08 12:14:36 | INFO | main | 共享子空间 share_subspace: True
+2026-10-08 12:14:36 | INFO | main | 自适应正交 lambda: [0.5, 1.0]
+2026-10-08 12:14:36 | INFO | main | 任务顺序: lowlight
+2026-10-08 12:17:20 | INFO | main | 配置文件: /root/code/odr-lora-restoration/configs/test_lowlight.yaml
+2026-10-08 12:17:20 | INFO | main | 随机种子: 42
+2026-10-08 12:17:20 | INFO | main | 设备: cuda
+2026-10-08 12:17:20 | INFO | main | 频带级别 freq_level: 2
+2026-10-08 12:17:20 | INFO | main | 频带数量 freq_bands: 7
+2026-10-08 12:17:20 | INFO | main | 空间分块 spatial_blocks: [2, 2]
+2026-10-08 12:17:20 | INFO | main | 共享子空间 share_subspace: True
+2026-10-08 12:17:20 | INFO | main | 自适应正交 lambda: [0.5, 1.0]
+2026-10-08 12:17:20 | INFO | main | 任务顺序: lowlight
+2026-10-08 12:26:20 | INFO | main | 配置文件: /root/code/odr-lora-restoration/configs/test_lowlight.yaml
+2026-10-08 12:26:20 | INFO | main | 随机种子: 42
+2026-10-08 12:26:20 | INFO | main | 设备: cuda
+2026-10-08 12:26:20 | INFO | main | 频带级别 freq_level: 2
+2026-10-08 12:26:20 | INFO | main | 频带数量 freq_bands: 7
+2026-10-08 12:26:20 | INFO | main | 空间分块 spatial_blocks: [2, 2]
+2026-10-08 12:26:20 | INFO | main | 共享子空间 share_subspace: True
+2026-10-08 12:26:20 | INFO | main | 自适应正交 lambda: [0.5, 1.0]
+2026-10-08 12:26:20 | INFO | main | 任务顺序: lowlight
+2026-10-08 12:29:25 | INFO | main | 配置文件: /root/code/odr-lora-restoration/configs/test_lowlight.yaml
+2026-10-08 12:29:25 | INFO | main | 随机种子: 42
+2026-10-08 12:29:25 | INFO | main | 设备: cuda
+2026-10-08 12:29:25 | INFO | main | 频带级别 freq_level: 2
+2026-10-08 12:29:25 | INFO | main | 频带数量 freq_bands: 7
+2026-10-08 12:29:25 | INFO | main | 空间分块 spatial_blocks: [2, 2]
+2026-10-08 12:29:25 | INFO | main | 共享子空间 share_subspace: True
+2026-10-08 12:29:25 | INFO | main | 自适应正交 lambda: [0.5, 1.0]
+2026-10-08 12:29:25 | INFO | main | 任务顺序: lowlight

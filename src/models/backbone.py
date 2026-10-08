@@ -264,15 +264,46 @@ class NAFNet(nn.Module):
             if isinstance(module, ODRLoRAConv2d):
                 module.freeze_base_and_old(current_idx)
 
-    def calibrate(self, x, current_idx, task_similarity=0.0):
-        for module in self.modules():
+    # ---------- 校准辅助：捕获每个 ODRLoRAConv2d 的真实输入 ----------
+    def _capture_layer_inputs(self, x):
+        """跑一次前向，用 hook 捕获每个 ODRLoRAConv2d 的真实输入。"""
+        inputs = {}
+        hooks = []
+
+        def make_hook(name):
+            def hook(module, inp, out):
+                inputs[name] = inp[0].detach()
+            return hook
+
+        for name, module in self.named_modules():
             if isinstance(module, ODRLoRAConv2d):
-                module.calibrate(x, current_idx, task_similarity)
+                hooks.append(module.register_forward_hook(make_hook(name)))
+
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                _ = self.forward(x)
+        finally:
+            for h in hooks:
+                h.remove()
+            if was_training:
+                self.train()
+        return inputs
+
+    def calibrate(self, x, current_idx, task_similarity=0.0):
+        # 每层用各自的真实输入做校准，避免把 3 通道原图传给 16 通道的层
+        inputs = self._capture_layer_inputs(x)
+        for name, module in self.named_modules():
+            if isinstance(module, ODRLoRAConv2d) and name in inputs:
+                module.calibrate(inputs[name], current_idx, task_similarity)
 
     def update_gpm(self, x, current_idx):
-        for module in self.modules():
-            if isinstance(module, ODRLoRAConv2d):
-                module.update_gpm(x, current_idx)
+        # 同样每层用各自的真实输入
+        inputs = self._capture_layer_inputs(x)
+        for name, module in self.named_modules():
+            if isinstance(module, ODRLoRAConv2d) and name in inputs:
+                module.update_gpm(inputs[name], current_idx)
 
     def merge_task(self, idx):
         for module in self.modules():

@@ -5,20 +5,20 @@ experiment:
   device: cuda
 
 data:
-  root: ./data
+  root: /root/autodl-tmp/
   tasks:
     - name: derain
       dataset: Rain100H
       train_split: train
       val_split: test
-      patch_size: 256
-      batch_size: 8
+      patch_size: 128
+      batch_size: 2
     - name: dehaze
       dataset: Haze4K
       train_split: train
       val_split: test
-      patch_size: 256
-      batch_size: 8
+      patch_size: 128
+      batch_size: 2
     - name: deblur
       dataset: GoPro
       train_split: train
@@ -35,41 +35,75 @@ data:
       dataset: LSRW
       train_split: train
       val_split: test
-      patch_size: 256
-      batch_size: 8
+      patch_size: 128
+      batch_size: 2
 
 model:
   backbone: NAFNet
-  base_channels: 32
-  num_blocks: [2, 4, 8, 4, 2]
+
+  # base_channels: 16
+  # num_blocks: [2, 4, 8, 4, 2]
+  # kernel_size: 3
+  # share_rank: 8
+  # private_rank_base: 8
+  # rank_gamma: 1.5
+  # rank_min: 4
+  # rank_max: 32
+
+  base_channels: 16          # 测试用更小通道数
+  num_blocks: [1, 1, 2, 1, 1]  # 测试用更少 block
   kernel_size: 3
-  share_rank: 8
-  private_rank_base: 8
+  share_rank: 4
+  private_rank_base: 4
   rank_gamma: 1.5
-  rank_min: 4
-  rank_max: 32
+  rank_min: 2
+  rank_max: 8
 
 odr_lora:
-  spatial_blocks: [2, 2]
-  spatial_sample_ratio: 0.1
-  freq_level: 2          # 1 -> 4 子带；2 -> 7 子带
-  freq_bands: 7          # 与 freq_level=2 对应
-  freq_decomp: dwt       # 使用多级 Haar DWT
+  # spatial_blocks: [2, 2]
+  # spatial_sample_ratio: 0.1
+  # freq_level: 2          # 1 -> 4 子带；2 -> 7 子带
+  # freq_bands: 7          # 与 freq_level=2 对应
+  # freq_decomp: dwt       # 使用多级 Haar DWT
+  # adaptive_lambda_min: 0.5
+  # adaptive_lambda_max: 1.0
+  # skip_orthogonal: true
+  # share_subspace: true
+
+  spatial_blocks: [1, 1]      # 测试用单块，加快速度
+  spatial_sample_ratio: 0.05  # 测试用更少采样
+  freq_level: 1               # 测试用 4 子带，比 7 子带快
+  freq_bands: 4
+  freq_decomp: dwt
   adaptive_lambda_min: 0.5
   adaptive_lambda_max: 1.0
   skip_orthogonal: true
   share_subspace: true
 
 train:
-  epochs_per_task: 400
+  # epochs_per_task: 400
+  # lr: 2.0e-4
+  # weight_decay: 1.0e-4
+  # scheduler: cosine
+  # warmup_epochs: 10
+  # grad_clip: 1.0
+  # loss:
+  #   l1: 1.0
+  #   perceptual: 0.1
+  #   orth: 0.01
+  #   freq: 0.01
+  #   share: 0.001
+  #   freq_sel: 0.001
+
+  epochs_per_task: 2          # 测试只跑 2 个 epoch
   lr: 2.0e-4
   weight_decay: 1.0e-4
   scheduler: cosine
-  warmup_epochs: 10
+  warmup_epochs: 1
   grad_clip: 1.0
   loss:
     l1: 1.0
-    perceptual: 0.1
+    perceptual: 0.0           # 测试关闭感知损失，加快速度
     orth: 0.01
     freq: 0.01
     share: 0.001

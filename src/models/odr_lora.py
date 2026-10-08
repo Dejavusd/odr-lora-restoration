@@ -126,8 +126,15 @@ class ODRLoRAConv2d(nn.Module):
     def add_task(self):
         """新增一个任务分支，返回任务索引。"""
         d = self.d
-        A = nn.Parameter(torch.zeros(self.out_channels, self.total_rank))
-        B = nn.Parameter(torch.zeros(self.total_rank, d))
+        ref = self.weight   # 用基座权重的 device/dtype 作为参考
+        A = nn.Parameter(torch.zeros(
+            self.out_channels, self.total_rank,
+            device=ref.device, dtype=ref.dtype,
+        ))
+        B = nn.Parameter(torch.zeros(
+            self.total_rank, d,
+            device=ref.device, dtype=ref.dtype,
+        ))
         # 前 share_rank 行从 B_share 复制（若已初始化）
         if self.B_share is not None and self.share_initialized:
             B.data[:self.share_rank] = self.B_share.data
@@ -219,12 +226,12 @@ class ODRLoRAConv2d(nn.Module):
             return
         V = topk_right_singular(H_all_private.T, self.private_rank, method='random')
         # V: [private_rank, d]
-        B.data[self.share_rank:] = V.to(B.dtype)
+        B.data[self.share_rank:] = V.to(B)
 
         # 6. 如果尚未初始化共享基，用当前 H_all 的主成分初始化
         if self.B_share is not None and not self.share_initialized:
             V_share = topk_right_singular(H_all.T, self.share_rank, method='random')
-            self.B_share.data.copy_(V_share.to(self.B_share.dtype))
+            self.B_share.data.copy_(V_share.to(self.B_share))
             B.data[:self.share_rank] = self.B_share.data
             self.share_initialized = True
 
