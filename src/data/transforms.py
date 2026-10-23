@@ -73,10 +73,20 @@ class RandomRotate:
 
 class ToTensor:
     """PIL Image -> torch.Tensor，范围 [0, 1]。"""
+    @staticmethod
+    def _to_tensor(image):
+        # Avoid torchvision.to_tensor's NumPy bridge.  Some torch/NumPy
+        # combinations reject an otherwise valid ndarray at that boundary.
+        image = image.convert("RGB")
+        width, height = image.size
+        tensor = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
+        tensor = tensor.reshape(height, width, 3).permute(2, 0, 1)
+        return tensor.float().div(255.0).contiguous()
+
     def __call__(self, img, gt=None):
-        img = TF.to_tensor(img)
+        img = self._to_tensor(img)
         if gt is not None:
-            gt = TF.to_tensor(gt)
+            gt = self._to_tensor(gt)
         return img, gt
 
 
