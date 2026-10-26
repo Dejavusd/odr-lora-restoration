@@ -84,13 +84,14 @@ def main():
                 return_state=True,
             )
             trainer.restore_metadata(state)
-            if int(state.get('current_task_idx', -1)) >= 0:
-                raise ValueError(
-                    '--resume 需要 task_*_final.pth 或 merged.pth；'
-                    'task_*_best.pth 包含尚未合并的分支，仅用于评估。'
-                )
             logger.info(f"恢复完成: epoch={epoch}, task_idx={task_idx}")
-            start_task_idx = task_idx + 1
+            state['epoch'] = epoch
+            state['task_idx'] = task_idx
+            if state.get('in_progress', False):
+                trainer.resume_state = state
+                start_task_idx = task_idx
+            else:
+                start_task_idx = task_idx + 1
         else:
             logger.warning(f"checkpoint 不存在: {args.resume}，从头开始训练。")
 

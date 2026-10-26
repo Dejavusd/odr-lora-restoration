@@ -63,6 +63,7 @@ class IncrementalTrainer:
             self.output_dir, 'continual_metrics.json'
         )
         self.performance_matrix = {}
+        self.resume_state = None
         if os.path.isfile(self.continual_metrics_path):
             try:
                 with open(self.continual_metrics_path, 'r') as handle:
@@ -170,23 +171,31 @@ class IncrementalTrainer:
     # ------------------------------------------------------------------
     # 训练单个任务
     # ------------------------------------------------------------------
-    def train_task(self, task_name, task_idx, epochs):
+    def train_task(self, task_name, task_idx, epochs, resume_state=None):
         self.logger.info(f"===== 开始训练任务 {task_idx}: {task_name} =====")
         train_loader, val_loader = build_task_loaders(self.cfg, task_name)
 
-        # 1. 新增任务分支
-        self.model.add_task()
-        self.model.set_current_task(task_idx)
+        is_resume = resume_state is not None
+        start_epoch = int(resume_state.get('epoch', 0)) if is_resume else 0
+        if is_resume:
+            self.logger.info(f"从任务 {task_idx} 的第 {start_epoch + 1} 个 epoch 继续训练")
+        else:
+            # 1. 新增任务分支
+            self.model.add_task()
+            self.model.set_current_task(task_idx)
 
         # 2. 估计任务相似度
-        sim = self._estimate_task_similarity(task_idx, train_loader)
-        self.task_similarity[task_idx] = sim
+        if is_resume:
+            sim = float(self.task_similarity.get(task_idx, 0.0))
+        else:
+            sim = self._estimate_task_similarity(task_idx, train_loader)
+            self.task_similarity[task_idx] = sim
         self.logger.info(f"任务 {task_idx} 与旧任务最大相似度: {sim:.4f}")
 
         # 3. For later tasks, calibrate B_t on the cumulative backbone before
         # optimization. Task 0 first learns the base network; calibrating deep
         # features of a random backbone would create a meaningless shared basis.
-        if task_idx > 0:
+        if task_idx > 0 and not is_resume:
             self.logger.info(f"任务 {task_idx} 校准低秩基 B_t ...")
             self.model.eval()
             with torch.no_grad():
@@ -197,7 +206,8 @@ class IncrementalTrainer:
                         break
 
         # 4. 记录当前任务频带能量
-        self._record_current_freq_energy(train_loader)
+        if not is_resume:
+            self._record_current_freq_energy(train_loader)
 
         # 5. 冻结基座和旧分支，只训练当前任务相关参数
         self.model.freeze_base_and_old(task_idx)
@@ -216,10 +226,13 @@ class IncrementalTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=epochs, eta_min=1e-6
         )
+        if is_resume and resume_state.get('optimizer') is not None:
+            optimizer.load_state_dict(resume_state['optimizer'])
+            scheduler.step(start_epoch)
 
         # 7. 训练循环
         best_psnr = 0.0
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             self.model.train()
             pbar = tqdm(train_loader, desc=f"Task {task_idx} Epoch {epoch+1}/{epochs}")
             epoch_loss = 0.0
@@ -241,6 +254,12 @@ class IncrementalTrainer:
             scheduler.step()
             avg_loss = epoch_loss / len(train_loader)
             self.logger.info(f"Task {task_idx} Epoch {epoch+1}: loss={avg_loss:.4f}")
+
+            save_checkpoint(
+                self.model, optimizer, epoch + 1, task_idx,
+                os.path.join(self.output_dir, 'latest.pth'),
+                extra={**self.checkpoint_metadata(), 'in_progress': True},
+            )
 
             # 定期评估
             if (epoch + 1) % 20 == 0 or epoch == epochs - 1:
@@ -399,7 +418,13 @@ class IncrementalTrainer:
         for idx, task_name in enumerate(self.task_order):
             if idx < start_task_idx:
                 continue
-            self.train_task(task_name, idx, epochs)
+            resume_state = None
+            if self.resume_state is not None:
+                if (int(self.resume_state.get('task_idx', -1)) == idx
+                        and self.resume_state.get('in_progress', False)):
+                    resume_state = self.resume_state
+                self.resume_state = None
+            self.train_task(task_name, idx, epochs, resume_state=resume_state)
 
         # 先评估未合并的模型（按任务 ID）
         self.logger.info("最终评估（按任务 ID，未合并）...")
