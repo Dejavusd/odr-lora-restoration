@@ -14,6 +14,7 @@ from src.data.datasets import build_task_loaders
 from src.utils.metrics import compute_psnr, compute_ssim, LPIPSMetric
 from src.utils.logger import get_logger
 from src.utils.checkpoint import load_model_weights
+from src.utils.inference import predict_image
 
 
 def save_image(tensor, path):
@@ -32,37 +33,54 @@ def save_image(tensor, path):
 
 
 @torch.no_grad()
-def evaluate_task(model, loader, task_idx, device, lpips_fn, save_dir=None, max_save=5):
+def evaluate_task(model, loader, task_idx, device, lpips_fn, save_dir=None, max_save=5,
+                  tile_size=0, tile_overlap=64):
     """
     评估单个任务。
     返回 dict: {'psnr': float, 'ssim': float, 'lpips': float, 'num': int}
     """
     model.eval()
     psnrs, ssims, lpipses = [], [], []
+    groups = {}
     saved = 0
 
     for batch in loader:
         x = batch['input'].to(device)
         gt = batch['gt'].to(device)
-        pred = model(x, task_idx)
+        pred = predict_image(model, x, task_idx, tile_size, tile_overlap)
+        if bool(batch.get('grayscale', [False])[0]):
+            pred = pred.mean(dim=1, keepdim=True).expand(-1, 3, -1, -1)
 
         psnrs.append(compute_psnr(pred, gt))
         ssims.append(compute_ssim(pred, gt))
         lpipses.append(lpips_fn(pred, gt))
+        if 'dataset_name' in batch:
+            name = batch['dataset_name'][0]
+            groups.setdefault(name, []).append((psnrs[-1], ssims[-1], lpipses[-1]))
 
         if save_dir is not None and saved < max_save:
             name = os.path.splitext(os.path.basename(batch['input_path'][0]))[0]
+            parent = os.path.dirname(batch['input_path'][0])
+            if os.path.basename(parent) in ('blur', 'blur_gamma'):
+                name = os.path.basename(os.path.dirname(parent)) + '_' + name
             save_image(pred, os.path.join(save_dir, f"{name}_pred.png"))
             save_image(gt, os.path.join(save_dir, f"{name}_gt.png"))
             save_image(x, os.path.join(save_dir, f"{name}_input.png"))
             saved += 1
 
-    return {
+    result = {
         'psnr': float(np.mean(psnrs)) if psnrs else 0.0,
         'ssim': float(np.mean(ssims)) if ssims else 0.0,
         'lpips': float(np.mean(lpipses)) if lpipses else 0.0,
         'num': len(psnrs),
     }
+    if groups:
+        result['datasets'] = {
+            name: dict(zip(('psnr', 'ssim', 'lpips'),
+                           map(float, np.mean(values, axis=0))), num=len(values))
+            for name, values in groups.items()
+        }
+    return result
 
 
 def main():
@@ -136,7 +154,9 @@ def main():
 
         metrics = evaluate_task(
             model, val_loader, task_idx, device, lpips_fn,
-            save_dir=save_dir, max_save=args.max_save
+            save_dir=save_dir, max_save=args.max_save,
+            tile_size=cfg.get('eval', {}).get('tile_size', 0),
+            tile_overlap=cfg.get('eval', {}).get('tile_overlap', 64),
         )
         results[task_name] = metrics
         logger.info(

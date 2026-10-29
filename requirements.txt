@@ -7,3 +7,4 @@ PyYAML==6.0.2
 tqdm==4.66.5
 lpips==0.1.4
 scikit-image==0.24.0
+matplotlib==3.9.4

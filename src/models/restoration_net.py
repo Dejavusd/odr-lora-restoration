@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .backbone import NAFNet
+from .odr_lora import ODRLoRAConv2d
 
 
 class RestorationNet(nn.Module):
@@ -12,6 +13,7 @@ class RestorationNet(nn.Module):
         super().__init__()
         m = cfg['model']
         o = cfg['odr_lora']
+        self.new_task_private_rank_base = m.get('new_task_private_rank_base')
 
         # 频带级别：1 -> 4 子带，2 -> 7 子带
         freq_level = o.get('freq_level', 2)
@@ -36,13 +38,32 @@ class RestorationNet(nn.Module):
             skip_orthogonal=o['skip_orthogonal'],
             share_subspace=o['share_subspace'],
         )
+        for module in self.modules():
+            if isinstance(module, ODRLoRAConv2d):
+                module.full_update_protection = o.get('full_update_protection', False)
+                module.basis_construction = o.get('basis_construction', 'legacy')
+                module.basis_rank_tolerance = float(o.get('basis_rank_tolerance', 1e-5))
+                if (module.basis_construction not in ('legacy', 'projected_svd')
+                        or module.basis_rank_tolerance <= 0
+                        or (module.basis_construction == 'projected_svd'
+                            and not module.full_update_protection)):
+                    raise ValueError('Invalid basis construction or protection setting')
+                module.gpm_statistics = o.get('gpm_statistics', 'frequency')
+                module.gpm_sample_columns = int(o.get('gpm_sample_columns', 512))
+                capacity = int(o.get('gpm_max_basis', m['rank_max']))
+                if (module.gpm_statistics not in ('frequency', 'raw')
+                        or capacity < 1 or module.gpm_sample_columns < 1):
+                    raise ValueError('Invalid GPM statistics, capacity or sample count')
+                module.dual_gpms['global'].max_basis = min(capacity, module.d)
 
     def forward(self, x, task_idx=None):
         return self.backbone(x, task_idx)
 
     # ---------- 任务管理接口 ----------
-    def add_task(self):
-        self.backbone.add_task()
+    def add_task(self, private_rank_base=None):
+        if private_rank_base is None and len(self.backbone.input_conv.task_A) > 0:
+            private_rank_base = self.new_task_private_rank_base
+        self.backbone.add_task(private_rank_base=private_rank_base)
 
     def set_current_task(self, idx):
         self.backbone.set_current_task(idx)

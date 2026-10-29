@@ -12,7 +12,7 @@ data:
       train_split: train
       val_split: test
       patch_size: 128
-      batch_size: 64
+      batch_size: 16
 
 model:
   backbone: NAFNet

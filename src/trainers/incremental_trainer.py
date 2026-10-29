@@ -17,6 +17,7 @@ from src.models.freq_decomp import (
 from src.utils.metrics import compute_psnr, compute_ssim, LPIPSMetric
 from src.utils.logger import get_logger, MetricLogger
 from src.utils.checkpoint import save_checkpoint, load_checkpoint
+from src.utils.inference import predict_image
 
 
 class IncrementalTrainer:
@@ -332,21 +333,38 @@ class IncrementalTrainer:
     def evaluate_task(self, loader, task_idx):
         self.model.eval()
         psnrs, ssims, lpipses = [], [], []
+        groups = {}
         lpips_fn = LPIPSMetric(self.device)
 
         for batch in loader:
             x = batch['input'].to(self.device)
             gt = batch['gt'].to(self.device)
-            pred = self.model(x, task_idx)
+            eval_cfg = self.cfg.get('eval', {})
+            pred = predict_image(self.model, x, task_idx,
+                                 eval_cfg.get('tile_size', 0),
+                                 eval_cfg.get('tile_overlap', 64))
+            if bool(batch.get('grayscale', [False])[0]):
+                pred = pred.mean(dim=1, keepdim=True).expand(-1, 3, -1, -1)
             psnrs.append(compute_psnr(pred, gt))
             ssims.append(compute_ssim(pred, gt))
             lpipses.append(lpips_fn(pred, gt))
+            if 'dataset_name' in batch:
+                name = batch['dataset_name'][0]
+                groups.setdefault(name, []).append((psnrs[-1], ssims[-1], lpipses[-1]))
 
-        return {
+        result = {
             'psnr': float(np.mean(psnrs)),
             'ssim': float(np.mean(ssims)),
             'lpips': float(np.mean(lpipses)),
         }
+        if groups:
+            result['datasets'] = {
+                name: dict(zip(('psnr', 'ssim', 'lpips'),
+                               map(float, np.mean(values, axis=0))), num=len(values))
+                for name, values in groups.items()
+            }
+            self.logger.info(f"去噪分数据集评估: {result['datasets']}")
+        return result
 
     # ------------------------------------------------------------------
     # 评估所有任务

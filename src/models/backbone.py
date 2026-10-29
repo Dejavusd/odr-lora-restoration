@@ -284,6 +284,12 @@ class NAFNet(nn.Module):
         )
 
     def forward(self, x, task_idx=None):
+        height, width = x.shape[-2:]
+        # Every stride-2 encoder stage must be exactly reversible by the decoder.
+        multiple = 2 ** (self.num_levels - 1)
+        pad_h, pad_w = (-height) % multiple, (-width) % multiple
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode='replicate')
         image = x
         x = self.input_conv(x, task_idx)
         skips = []
@@ -304,13 +310,14 @@ class NAFNet(nn.Module):
         x = self.output_conv(x, task_idx)
         if x.shape == image.shape:
             x = x + image
-        return x
+        return x[..., :height, :width]
 
     # ---------- 任务管理接口 ----------
-    def add_task(self):
+    def add_task(self, private_rank_base=None):
         for module in self.modules():
             if isinstance(module, ODRLoRAConv2d):
-                module.add_task()
+                rank = None if private_rank_base is None else module._compute_rank(private_rank_base)
+                module.add_task(private_rank=rank)
 
     def set_current_task(self, idx):
         for module in self.modules():

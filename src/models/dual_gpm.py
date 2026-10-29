@@ -120,6 +120,65 @@ class DualGPM(nn.Module):
         proj = M @ (M.T @ H)
         return H - proj
 
+    @torch.no_grad()
+    def extend_from_covariance(self, covariance, max_basis=None):
+        """Return a larger basis without dropping any protected directions.
+
+        Covariance is an uncentered sum H H^T in the actual convolution input
+        coordinates. Fit residual PCA in float64 on CPU; do not change self.
+        max_basis is a cap, not a required rank. eps controls sampled energy.
+        """
+        cap = self.max_basis if max_basis is None else int(max_basis)
+        cap = min(cap, self.dim)
+        if cap < 1 or covariance.shape != (self.dim, self.dim):
+            raise ValueError('Invalid covariance shape or GPM capacity')
+        C = covariance.detach().to(device='cpu', dtype=torch.float64)
+        C = (C + C.T) * 0.5
+        if not torch.isfinite(C).all():
+            raise ValueError('Non-finite activation covariance')
+        total = float(C.trace())
+        old = self.basis
+        M = (torch.empty(self.dim, 0, dtype=torch.float64) if old is None
+             else torch.linalg.qr(old.detach().cpu().double(), mode='reduced').Q)
+        old_rank = M.shape[1]
+        if cap < old_rank:
+            raise ValueError('Cannot shrink capacity without dropping old directions')
+        protected = float((M.T @ C @ M).trace()) if old_rank else 0.0
+        missing = max(0.0, self.eps * total - protected)
+        k = 0
+        if missing > max(1e-12, total * 1e-12) and cap > old_rank:
+            residual = C - M @ (M.T @ C)
+            residual = residual - (residual @ M) @ M.T
+            residual = (residual + residual.T) * 0.5
+            eigenvalues, eigenvectors = torch.linalg.eigh(residual)
+            energy = eigenvalues.flip(0).clamp_min(0)
+            vectors = eigenvectors.flip(1)
+            valid = int((energy > max(1e-12, float(energy[0]) * 1e-7)).sum())
+            requested = int(torch.searchsorted(energy.cumsum(0), missing)) + 1
+            k = min(requested, valid, cap - old_rank, self.dim - old_rank)
+            if k:
+                V = vectors[:, :k]
+                for _ in range(2):
+                    V = V - M @ (M.T @ V)
+                V = torch.linalg.qr(V, mode='reduced').Q
+                M = torch.cat((M, V), dim=1)
+        achieved = float((M.T @ C @ M).trace()) / max(total, 1e-12)
+        ref = self._basis
+        return M.to(device=ref.device, dtype=ref.dtype), dict(
+            dim=self.dim, cap=cap, old_rank=old_rank, added_rank=k,
+            rank=M.shape[1], sampled_coverage_before=protected / max(total, 1e-12),
+            sampled_coverage_after=achieved, total_energy=total)
+
+    @torch.no_grad()
+    def update_preserving(self, H):
+        if H is None or not H.numel():
+            return
+        H = H.detach().float()
+        basis, info = self.extend_from_covariance(H @ H.T)
+        self.basis = basis
+        self.singular_values = None
+        return info
+
     def project_in(self, H):
         """投影到 M 内。"""
         if self.basis is None:

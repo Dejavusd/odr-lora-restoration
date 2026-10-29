@@ -124,6 +124,13 @@ class ODRLoRAConv2d(nn.Module):
         })
 
         self.current_task_idx = -1
+        # Opt-in ablation: constrain the complete update, including shared rows.
+        # Store the projected B itself so forward, checkpoint and merge agree.
+        self.full_update_protection = False
+        self.basis_construction = 'legacy'
+        self.basis_rank_tolerance = 1e-5
+        self.gpm_statistics = 'frequency'
+        self.gpm_sample_columns = 512
         self._merged_tasks = set()
         self._init_weights()
 
@@ -166,16 +173,19 @@ class ODRLoRAConv2d(nn.Module):
         return pairs
 
     # ---------- 任务管理 ----------
-    def add_task(self):
+    def add_task(self, private_rank=None):
         """新增一个任务分支，返回任务索引。"""
         d = self.d
+        total_rank = self.total_rank if private_rank is None else self.share_rank + int(private_rank)
+        if total_rank < self.share_rank:
+            raise ValueError('private_rank must be nonnegative')
         ref = self.weight   # 用基座权重的 device/dtype 作为参考
         A = nn.Parameter(torch.zeros(
-            self.out_channels, self.total_rank,
+            self.out_channels, total_rank,
             device=ref.device, dtype=ref.dtype,
         ))
         B = nn.Parameter(torch.zeros(
-            self.total_rank, d,
+            total_rank, d,
             device=ref.device, dtype=ref.dtype,
         ))
         # 前 share_rank 行从 B_share 复制（若已初始化）
@@ -243,6 +253,12 @@ class ODRLoRAConv2d(nn.Module):
             self.B_share.data.copy_(V_share.to(self.B_share))
             self.share_initialized.fill_(True)
 
+        if self.basis_construction == 'projected_svd':
+            if not self.full_update_protection:
+                raise ValueError('projected_svd requires full_update_protection')
+            self._calibrate_projected(H_all, current_idx)
+            return
+
         if self.B_share is not None and bool(self.share_initialized):
             Bs = self.B_share  # [r_share, d]
             B.data[:self.share_rank] = Bs.data
@@ -267,9 +283,72 @@ class ODRLoRAConv2d(nn.Module):
         H_all_private = H_all_private.float()
         if H_all_private.shape[1] == 0:
             return
-        V = topk_right_singular(H_all_private.T, self.private_rank, method='random')
+        private_rank = B.shape[0] - self.share_rank
+        if private_rank == 0:
+            if self.full_update_protection:
+                self.protect_task_basis(current_idx)
+            return
+        V = topk_right_singular(H_all_private.T, private_rank, method='random')
         # V: [private_rank, d]
-        B.data[self.share_rank:] = V.to(B)
+        B.data[self.share_rank:].zero_()
+        B.data[self.share_rank:self.share_rank + V.shape[0]] = V.to(B)
+        if self.full_update_protection:
+            self.protect_task_basis(current_idx)
+
+    @torch.no_grad()
+    def _calibrate_projected(self, H, task_idx):
+        """Construct unit bases INSIDE the old GPM nullspace before selection.
+
+        Keep only non-negligible singular directions. Unused allocated rows
+        stay zero; never normalize numerical nullspace residue into a vector.
+        Private directions are also orthogonal to the effective shared span.
+        """
+        B = self.task_B[task_idx]
+        M = self.dual_gpms['global'].basis
+
+        def project_rows(rows):
+            if M is not None:
+                for _ in range(2):
+                    rows = rows - (rows @ M) @ M.T
+            return rows
+
+        def unit_rows(matrix, count):
+            if count <= 0 or matrix.numel() == 0:
+                return matrix.new_empty((0, self.d))
+            _, values, vectors = torch.linalg.svd(matrix.float(), full_matrices=False)
+            threshold = max(1e-6, float(values[0]) * self.basis_rank_tolerance)
+            rank = min(count, int((values > threshold).sum()))
+            return vectors[:rank].to(B)
+
+        shared = B.new_empty((0, self.d))
+        if self.B_share is not None:
+            shared = unit_rows(project_rows(self.B_share.float()), self.share_rank)
+        residual = project_rows(H.T.float())
+        if shared.numel():
+            for _ in range(2):
+                residual = residual - (residual @ shared.T) @ shared
+                residual = project_rows(residual)
+        private = unit_rows(residual, B.shape[0] - self.share_rank)
+        B.zero_()
+        B[:shared.shape[0]].copy_(shared)
+        B[self.share_rank:self.share_rank + private.shape[0]].copy_(private)
+        self.protect_task_basis(task_idx)
+
+    @torch.no_grad()
+    def protect_task_basis(self, task_idx):
+        """Make (A @ B) @ M = 0 for every A, with B frozen during training.
+
+        Apply once after calibration, using the OLD GPM. Do not project against
+        a GPM updated after training: that would change the learned function.
+        No row normalization follows projection, including nearly-zero rows.
+        """
+        basis = self.dual_gpms['global'].basis
+        if basis is not None:
+            B = self.task_B[task_idx]
+            # A second pass removes floating-point residuals, particularly in
+            # small layers whose protected subspace nearly spans all inputs.
+            for _ in range(2):
+                B.copy_(B - (B @ basis) @ basis.T)
 
     @torch.no_grad()
     def update_gpm(self, x, current_idx):
@@ -277,11 +356,23 @@ class ODRLoRAConv2d(nn.Module):
         self.eval()
         if self.is_skip_fusion and not self.skip_orthogonal:
             return
+        if self.gpm_statistics == 'raw':
+            H = self.raw_input_matrix(x)
+            self.dual_gpms['global'].update_preserving(H)
+            return
         grid_h, grid_w = self.spatial_blocks
         pairs = self._extract_statistics(x)
         matrices = [H_sub for _, _, H_sub in pairs if H_sub.numel() > 0]
         if matrices:
             self.dual_gpms['global'].update(torch.cat(matrices, dim=1))
+
+    def raw_input_matrix(self, x):
+        """Bounded, uniformly sampled patches in actual convolution coordinates."""
+        H = F.unfold(x, self.kernel_size, padding=self.padding, stride=self.stride)
+        H = H.permute(1, 0, 2).reshape(self.d, -1)
+        count = min(self.gpm_sample_columns, H.shape[1])
+        indices = torch.linspace(0, H.shape[1] - 1, count, device=H.device).long()
+        return H[:, indices]
 
     # ---------- 前向 ----------
     def forward(self, x, task_idx=None):

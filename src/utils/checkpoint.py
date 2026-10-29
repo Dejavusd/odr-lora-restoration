@@ -30,6 +30,26 @@ def _prepare_dynamic_tasks(model, model_state, requested_count=None):
         requested_count = max(indices) + 1 if indices else 0
     while _task_count(model) < requested_count:
         model.add_task()
+    # Task-specific rank changes must not resize old adapters or require the
+    # evaluator to guess the training rank. Restore each saved task's shape.
+    for name, module in model.named_modules():
+        if not hasattr(module, 'task_A') or not hasattr(module, 'task_B'):
+            continue
+        prefix = name + '.' if name else ''
+        for idx in range(len(module.task_A)):
+            a = model_state.get(f'{prefix}task_A.{idx}')
+            b = model_state.get(f'{prefix}task_B.{idx}')
+            if a is None or b is None:
+                continue
+            if (a.ndim != 2 or b.ndim != 2 or a.shape[0] != module.out_channels
+                    or b.shape[1] != module.d or a.shape[1] != b.shape[0]):
+                raise ValueError(f'Incompatible adapter architecture: {prefix}task_{idx}')
+            for parameter_list, tensor in ((module.task_A, a), (module.task_B, b)):
+                if parameter_list[idx].shape != tensor.shape:
+                    ref = module.weight
+                    parameter_list[idx] = torch.nn.Parameter(torch.empty(
+                        tensor.shape, device=ref.device, dtype=ref.dtype),
+                        requires_grad=parameter_list[idx].requires_grad)
 
 
 def _restore_runtime_state(model, state):
@@ -118,7 +138,15 @@ def load_checkpoint(
         # 兼容直接保存 state_dict 的情况
         model_state = state
 
+    previous_parameters = dict(model.named_parameters()) if optimizer is not None else {}
     _prepare_dynamic_tasks(model, model_state, state.get('num_tasks'))
+    if optimizer is not None:
+        current_parameters = dict(model.named_parameters())
+        replacements = {parameter: current_parameters[name]
+                        for name, parameter in previous_parameters.items()
+                        if name in current_parameters and parameter is not current_parameters[name]}
+        for group in optimizer.param_groups:
+            group['params'] = [replacements.get(parameter, parameter) for parameter in group['params']]
     model.load_state_dict(model_state, strict=False)
     _restore_runtime_state(model, state)
 
