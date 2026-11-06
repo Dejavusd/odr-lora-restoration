@@ -1,5 +1,19 @@
 # 干净配对重训 LSRW，再复验 RainH → Haze4K
 
+从balanced50三任务断点继续去噪/GOPRO的五任务实验，参见 [FIVE_TASKS.md](FIVE_TASKS.md)。
+
+历史空间/当前任务残差的配额对照，参见 [BALANCED_MEMORY.md](BALANCED_MEMORY.md)。
+
+固定容量保留历史方向的无回放对照，参见 [MEMORY_RETENTION.md](MEMORY_RETENTION.md)。
+
+频域/真实空间 GPM 的无回放统计来源单变量训练，参见 [MEMORY_SOURCE_STUDY.md](MEMORY_SOURCE_STUDY.md)。
+
+频域/空间域统计的离线核对结果，参见 [GPM_COORDINATE_AUDIT.md](GPM_COORDINATE_AUDIT.md)。
+
+无回放正交LoRA的相对更新范数约束实验，参见 [BOUNDED_LORA.md](BOUNDED_LORA.md)。
+
+2026-11-04 的下一步短程全图回放/输出一致性对照，参见 [STABILITY_CONTROL.md](STABILITY_CONTROL.md)。
+
 新入口：`src/scripts/train_clean_sequence.py`。配置：`configs/clean_lsrw_rainh_haze4k.yaml`。
 旧 `train_incremental.py` 的行为没有被替换；本轮正式复验请使用新入口。
 这里提供正式训练命令，验证阶段仅启动了短程冒烟与恢复测试，没有后台启动 400 轮长跑。
@@ -53,7 +67,8 @@ CUDA_VISIBLE_DEVICES=1 python src/scripts/train_clean_sequence.py \
 ```
 
 **不要添加 `--resume outputs/lsrw/...`**：这是从零训练，不接续历史错误配对的模型。
-默认 batch=8、128 裁剪、最多 400 个 epoch、LR=2e-4 的 cosine、L1+0.1 LPIPS。
+当前默认 batch=64、128 裁剪、最多 400 个 epoch、LR=2e-4 的 cosine、L1+0.1 LPIPS。
+2026-11-03 已完成的 clean 断点使用 batch=16；对这些历史实验精确恢复时需使用 batch=16 的配置。
 主训练与评估使用严格 FP32（TF32 关闭），每 10 epoch 用完整训练留出集验证，末轮也验证。
 不据旧测试集调参或选模；同分优先较早 epoch。warmup 显式为 0，不像旧配置那样写了但未使用。
 任务结束时恢复验证最优权重，再仅用实际训练分区初始化共享基并更新 GPM，最后合并、评估测试集。
@@ -142,6 +157,38 @@ CUDA_VISIBLE_DEVICES=1 python src/scripts/train_clean_sequence.py \
 若原来指定了其他 `--incremental-seed`，恢复时保持相同参数。
 不能在同一个任务中途更换方法、种子、数据、batch、轮数或学习率；旧历史模型/probe/smoke/inference export 都不能混入正式训练。
 `latest` 若已是任务完成状态，会自动进入下一个任务。
+
+从已完成任务分支并显式改为当前配置的 batch=64，需要新输出目录和
+`--allow-batch-size-change`。例如仅重跑 Haze4K：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python -u src/scripts/train_clean_sequence.py \
+  --config configs/clean_lsrw_rainh_haze4k.yaml \
+  --resume outputs/clean_effective_r16/task_1_final.pth \
+  --output-dir outputs/clean_effective_r16_b64_haze4k \
+  --method effective_r16 --allow-batch-size-change
+```
+
+该选项只放宽 batch size 和显存额度比较，其余协议检查继续执行；任务中途禁止使用。
+batch64 + VGG 的真实单步检查超过旧 50% 显存额度，当前配置已将 memory_fraction 提至 0.9。
+分支记录在新目录的 run_manifest.json 中。64 相比 16 的每轮优化步数更少，
+新实验不属于等更新次数对照；改变 batch size 本身不保证减少遗忘。
+
+## 旧任务输出稳定性审计
+
+使用两个正式任务末断点，在全部旧任务训练留出验证图像上逐张比较输出：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python -u src/scripts/audit_output_stability.py \
+  --before outputs/clean_effective_r16/task_1_final.pth \
+  --after outputs/clean_effective_r16/task_2_final.pth \
+  --output-dir outputs/output_stability_new
+```
+
+输出 stability.json 包含每图 PSNR/SSIM、原始及 clamp 后输出漂移、变化方向、
+各层真实卷积输入的 GPM 覆盖率和局部增量响应。覆盖率只抽样每任务前 8 张验证图，
+每层每图最多 128 个真实卷积 patch；输出指标使用全部验证图像。
+审计读取历史训练结果，不代表 batch=64 已重新训练；源断点 SHA256 在运行前后检查。
 
 远程连接不稳定，建议先在 `tmux new -s odr-clean` 中执行训练命令；断开后用
 `tmux attach -t odr-clean` 回到同一会话。另一个终端查看：

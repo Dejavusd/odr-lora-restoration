@@ -1,5 +1,8 @@
 # GOPRO 去模糊
 
+当前无回放五任务实验使用新入口 `train_five_tasks.py`，参见 [FIVE_TASKS.md](FIVE_TASKS.md)。
+下文为旧入口；新实验采用录像分组验证与分块评估协议。
+
 保留 `data/GOPRO/{train,test}/序列名/{blur,blur_gamma,sharp}/` 原始目录。
 配置 `type: gopro` 使用序列名和完整文件名配对，默认输入为 `blur`，
 GT 为 `sharp`。可将 `input_folder` 改为 `blur_gamma`，但训练与测试

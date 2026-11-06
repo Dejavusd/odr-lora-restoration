@@ -27,13 +27,21 @@ def run_protocol(cfg):
     return result
 
 
-def validate_resume(cfg, saved, split_sha):
+def validate_resume(cfg, saved, split_sha, allow_batch_size_change=False):
     if (saved.get('clean_protocol_version') != 1 or saved.get('probe_only')
             or saved.get('inference_only') or saved.get('smoke_test', False) != cfg.get('smoke_test', False)):
         raise ValueError('只接受本 clean 入口产生的同模式 checkpoint；旧模型、probe、merged.pth 不可续训')
     if saved.get('split_sha256') != split_sha:
         raise ValueError('恢复模型与当前数据划分 SHA256 不一致')
     old, new = copy.deepcopy(saved['run_protocol']), run_protocol(cfg)
+    if allow_batch_size_change:
+        if saved.get('in_progress', False):
+            raise ValueError('batch size 只能在已完成任务的边界更改，不能用于中途精确恢复')
+        for item in (old, new):
+            # Batch64 + VGG can exceed the previous 50% allocator quota.
+            item['experiment'].pop('memory_fraction', None)
+            for task in item['data']['tasks']:
+                task.pop('batch_size', None)
     if not saved.get('in_progress', False) and saved.get('task_idx') == 0:
         # One clean task-0 checkpoint is the common starting point for all arms.
         for item in (old, new):
@@ -59,8 +67,9 @@ def frozen_fingerprint(model, task_idx):
 
 
 class CleanSequenceTrainer(IncrementalTrainer):
-    def __init__(self, cfg, manifest):
+    def __init__(self, cfg, manifest, allow_batch_size_change=False):
         super().__init__(cfg)
+        self.allow_batch_size_change = allow_batch_size_change
         self.manifest = manifest
         self.split_sha = sha256_file(cfg['data']['split_manifest'])
         self.protocol = run_protocol(cfg)
@@ -89,7 +98,7 @@ class CleanSequenceTrainer(IncrementalTrainer):
 
     def restore(self, path):
         _, _, state = load_checkpoint(self.model, str(path), map_location=self.device, return_state=True)
-        validate_resume(self.cfg, state, self.split_sha)
+        validate_resume(self.cfg, state, self.split_sha, self.allow_batch_size_change)
         self.model.load_state_dict(state['model'], strict=True)
         self.restore_metadata(state)
         self.history = state.get('history', [])
@@ -129,6 +138,22 @@ class CleanSequenceTrainer(IncrementalTrainer):
         if max(values) > 1e-5:
             raise RuntimeError(f'完整更新泄漏超标：{max(values)}')
         return dict(mean=float(np.mean(values)), max=max(values), layers=len(values))
+
+    def backward_batch(self, x, gt, task_idx):
+        loss = self.loss_fn(self.model(x, task_idx), gt)
+        if not torch.isfinite(loss):
+            raise FloatingPointError('训练 loss 出现 NaN/Inf')
+        loss.backward()
+        return float(loss.detach())
+
+    def validation_for_selection(self, loader, task_idx):
+        return self.evaluate_task(loader, task_idx)
+
+    def after_optimizer_step(self, task_idx):
+        pass
+
+    def training_diagnostics(self):
+        return {}
 
     def train_task(self, task_name, task_idx, epochs, resume_state=None):
         train, val = self.loader(task_name, 'train'), self.loader(task_name, 'validation')
@@ -179,13 +204,11 @@ class CleanSequenceTrainer(IncrementalTrainer):
             for step, batch in enumerate(tqdm(train, desc=f'CLEAN {task_name} {epoch+1}/{epochs}'), 1):
                 x, gt = batch['input'].to(self.device), batch['gt'].to(self.device)
                 optimizer.zero_grad(set_to_none=True)
-                loss = self.loss_fn(self.model(x, task_idx), gt)
-                if not torch.isfinite(loss):
-                    raise FloatingPointError('训练 loss 出现 NaN/Inf')
-                loss.backward()
+                loss_value = self.backward_batch(x, gt, task_idx)
                 torch.nn.utils.clip_grad_norm_(params, self.cfg['train']['grad_clip'], error_if_nonfinite=True)
                 optimizer.step()
-                losses.append(float(loss.detach()))
+                self.after_optimizer_step(task_idx)
+                losses.append(loss_value)
                 limit = self.cfg['train'].get('max_steps_per_epoch')
                 if limit is not None and step >= limit:
                     break
@@ -194,10 +217,11 @@ class CleanSequenceTrainer(IncrementalTrainer):
             scheduler.step()
             row = dict(task=task_name, epoch=epoch+1, loss=float(np.mean(losses)),
                        lr=optimizer.param_groups[0]['lr'], optimizer_updates=len(losses))
+            row.update(self.training_diagnostics())
             interval = self.cfg['eval']['validation_interval']
             improved = False
             if (epoch+1) % interval == 0 or epoch+1 == epochs:
-                row['validation'] = self.evaluate_task(val, task_idx)
+                row['validation'] = self.validation_for_selection(val, task_idx)
                 score = row['validation']['psnr']
                 if self.best_psnr is None or score > self.best_psnr:
                     self.best_psnr, self.best_epoch = score, epoch+1
@@ -254,6 +278,10 @@ class CleanSequenceTrainer(IncrementalTrainer):
                 break
 
     @torch.no_grad()
+    def finalize_memory(self, idx):
+        pass
+
+    @torch.no_grad()
     def _finish_task(self, loader, idx):
         self.model.eval()
         sample = next(iter(loader))['input'][:1].to(self.device)
@@ -267,6 +295,7 @@ class CleanSequenceTrainer(IncrementalTrainer):
             self.model.update_gpm(batch['input'].to(self.device), idx)
             if i+1 >= self.cfg['train']['gpm_batches']:
                 break
+        self.finalize_memory(idx)
         memory_error = float((self.model(sample, idx)-before).abs().max())
         if memory_error != 0:
             raise RuntimeError(f'更新 GPM 改变了物理前向函数：{memory_error}')

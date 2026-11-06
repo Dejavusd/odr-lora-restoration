@@ -170,6 +170,87 @@ class DualGPM(nn.Module):
             sampled_coverage_after=achieved, total_energy=total)
 
     @torch.no_grad()
+    def accumulate_balanced(self, H):
+        if not torch.isfinite(H).all():
+            raise FloatingPointError('Nonfinite balanced GPM statistics')
+        contribution=H.detach().float()@H.detach().float().T
+        if getattr(self,'_balanced_covariance',None) is None:
+            self._balanced_covariance=contribution
+            self._balanced_columns=H.shape[1]
+        else:
+            self._balanced_covariance.add_(contribution)
+            self._balanced_columns+=H.shape[1]
+
+    @torch.no_grad()
+    def finalize_balanced(self, old_fraction=.5):
+        """One aggregate covariance per task; reserve old-space quota then residual PCA.
+
+        No historical eigenvalue ordering is available. Retain old-space modes
+        least active on current inputs, leaving current PCA to cover overlap.
+        This is a stated allocation heuristic, not old-task importance ranking.
+        """
+        import math
+        if not math.isfinite(old_fraction) or not 0<=old_fraction<=1:
+            raise ValueError('old_fraction must be in [0,1]')
+        covariance=getattr(self,'_balanced_covariance',None)
+        if covariance is None:raise ValueError('No balanced covariance collected')
+        C=covariance.cpu().double();C=(C+C.T)*.5
+        if not torch.isfinite(C).all():raise FloatingPointError('Nonfinite covariance')
+        import hashlib
+        covariance_sha256=hashlib.sha256(C.contiguous().numpy().tobytes()).hexdigest()
+        total=float(C.trace());cap=min(self.max_basis,self.dim)
+        old=(torch.empty(self.dim,0,dtype=torch.float64) if self.basis is None
+             else torch.linalg.qr(self.basis.cpu().double(),mode='reduced').Q)
+        old_rank=old.shape[1]
+        if old_rank>cap:raise ValueError('Existing basis exceeds capacity')
+        budget=min(old_rank,int(math.floor(cap*old_fraction+.5)))
+        if total<=1e-20:
+            result=old;kept=old_rank;added=0
+        else:
+            C=C/total
+            if budget==old_rank:
+                retained=old
+            elif budget:
+                _,vectors=torch.linalg.eigh(old.T@C@old)
+                retained=old@vectors[:,:budget]
+            else:
+                retained=old[:,:0]
+            kept=retained.shape[1]
+            residual=C-retained@(retained.T@C)
+            residual=residual-(residual@retained)@retained.T
+            residual=(residual+residual.T)*.5
+            protected=float((retained.T@C@retained).trace()) if kept else 0.
+            missing=max(0.,self.eps-protected)
+            room=cap-kept;added=0;result=retained
+            if room and missing>1e-12:
+                eigenvalues,vectors=torch.linalg.eigh(residual)
+                energy=eigenvalues.flip(0).clamp_min(0);vectors=vectors.flip(1)
+                valid=int((energy>max(1e-12,float(energy[0])*1e-7)).sum())
+                requested=int(torch.searchsorted(energy.cumsum(0),missing))+1
+                added=min(room,valid,requested)
+                if added:
+                    new=vectors[:,:added]
+                    for _ in range(2):new=new-retained@(retained.T@new)
+                    new=torch.linalg.qr(new,mode='reduced').Q
+                    result=torch.cat((retained,new),1)
+        if result.shape[1]==0:raise ValueError('Empty balanced memory')
+        if float((result.T@result-torch.eye(result.shape[1],dtype=result.dtype)).abs().max())>1e-5:
+            raise RuntimeError('Balanced basis not orthonormal')
+        residual=float((old-result@(result.T@old)).norm()/old.norm().clamp_min(1e-20)) if old_rank else 0.
+        info=dict(cap=cap,old_fraction=old_fraction,old_rank=old_rank,old_quota=budget,
+            retained_old_rank=kept,current_residual_rank=added,rank=result.shape[1],
+            columns=self._balanced_columns,old_span_residual=residual,total_energy=total,
+            old_span_overlap_fraction=float((old.T@result).square().sum()/old_rank) if old_rank else 0.,
+            current_energy_coverage=float((result.T@C@result).trace()) if total>1e-20 else 0.,
+            covariance_sha256=covariance_sha256,
+            selector='least current-energy modes inside old span, then current residual PCA',
+            no_current_energy=total<=1e-20)
+        self.basis=result.to(device=self._basis.device,dtype=self._basis.dtype)
+        self.singular_values=None
+        self._balanced_covariance=None;self._balanced_columns=0
+        return info
+
+    @torch.no_grad()
     def update_preserving(self, H):
         if H is None or not H.numel():
             return

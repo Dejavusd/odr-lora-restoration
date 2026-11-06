@@ -49,9 +49,11 @@ class RestorationNet(nn.Module):
                             and not module.full_update_protection)):
                     raise ValueError('Invalid basis construction or protection setting')
                 module.gpm_statistics = o.get('gpm_statistics', 'frequency')
+                module.gpm_update_rule = o.get('gpm_update_rule', 'legacy')
                 module.gpm_sample_columns = int(o.get('gpm_sample_columns', 512))
                 capacity = int(o.get('gpm_max_basis', m['rank_max']))
                 if (module.gpm_statistics not in ('frequency', 'raw')
+                        or module.gpm_update_rule not in ('legacy','bounded_svd','bounded_preserving','bounded_balanced')
                         or capacity < 1 or module.gpm_sample_columns < 1):
                     raise ValueError('Invalid GPM statistics, capacity or sample count')
                 module.dual_gpms['global'].max_basis = min(capacity, module.d)

@@ -130,7 +130,9 @@ class ODRLoRAConv2d(nn.Module):
         self.basis_construction = 'legacy'
         self.basis_rank_tolerance = 1e-5
         self.gpm_statistics = 'frequency'
+        self.gpm_update_rule = 'legacy'
         self.gpm_sample_columns = 512
+        self.gpm_column_history = []
         self._merged_tasks = set()
         self._init_weights()
 
@@ -355,6 +357,29 @@ class ODRLoRAConv2d(nn.Module):
         """训练完当前任务后，用当前任务输入更新 DualGPM。"""
         self.eval()
         if self.is_skip_fusion and not self.skip_orthogonal:
+            return
+        if self.gpm_update_rule in ('bounded_svd','bounded_preserving','bounded_balanced'):
+            # Matched ablation: same budget and SAME merge rule for both sources.
+            matrices = [h for _,_,h in self._extract_statistics(x) if h.numel()]
+            if not matrices:
+                return
+            frequency = torch.cat(matrices,dim=1)
+            raw_columns = x.shape[0] * ((x.shape[-2]+2*self.padding-self.kernel_size)//self.stride+1) * (
+                (x.shape[-1]+2*self.padding-self.kernel_size)//self.stride+1)
+            count = min(self.gpm_sample_columns,frequency.shape[1],raw_columns)
+            if self.gpm_statistics == 'raw':
+                H = self.raw_input_matrix(x)
+            else:
+                H = frequency
+            indices = torch.linspace(0,H.shape[1]-1,count,device=H.device).long()
+            H = H[:,indices]
+            self.gpm_column_history.append(H.shape[1])
+            if self.gpm_update_rule == 'bounded_balanced':
+                self.dual_gpms['global'].accumulate_balanced(H)
+            elif self.gpm_update_rule == 'bounded_preserving':
+                self.dual_gpms['global'].update_preserving(H)
+            else:
+                self.dual_gpms['global'].update(H)
             return
         if self.gpm_statistics == 'raw':
             H = self.raw_input_matrix(x)

@@ -28,11 +28,15 @@ def main():
     parser.add_argument('--config', default='configs/clean_lsrw_rainh_haze4k.yaml')
     parser.add_argument('--output-dir')
     parser.add_argument('--resume')
+    parser.add_argument('--allow-batch-size-change', action='store_true',
+                        help='Allow batch size / memory quota changes at a completed task; use a fresh output directory')
     parser.add_argument('--stop-after', choices=('lowlight', 'rainh', 'dehaze'))
     parser.add_argument('--method', choices=('current_basis', 'effective_r8', 'effective_r16'), default='effective_r16')
     parser.add_argument('--incremental-seed', type=int)
     parser.add_argument('--smoke-test', action='store_true', help='Isolated 2-step/task wiring test; NOT a formal run')
     args = parser.parse_args()
+    if args.allow_batch_size_change and not args.resume:
+        parser.error('--allow-batch-size-change 需要 --resume 指向已完成任务的断点')
     cfg = configure_method(yaml.safe_load(Path(args.config).read_text()), args.method)
     if args.output_dir:
         cfg['experiment']['output_dir'] = args.output_dir
@@ -69,13 +73,15 @@ def main():
     if args.resume:
         # Preflight before creating output directories or GPU models.
         state = torch.load(args.resume, map_location='cpu', weights_only=False)
-        validate_resume(cfg, state, split_sha)
+        validate_resume(cfg, state, split_sha, args.allow_batch_size_change)
         if args.stop_after and state['task_idx'] > ['lowlight','rainh','dehaze'].index(args.stop_after):
             raise ValueError('checkpoint 已超过 stop-after 指定的阶段，不能倒退')
         del state
     output = Path(cfg['experiment']['output_dir'])
     run_path = output / 'run_manifest.json'
     if output.exists() and any(output.iterdir()):
+        if args.allow_batch_size_change:
+            raise FileExistsError('更改 batch size 分支必须使用新的空输出目录')
         if not args.resume or not run_path.exists():
             raise FileExistsError(f'输出目录非空，拒绝覆盖：{output}；续训请指定 --resume')
         existing = json.loads(run_path.read_text())
@@ -95,13 +101,14 @@ def main():
     atomic_json(run_path, dict(protocol=run_protocol(cfg), split_sha256=split_sha,
         config_source=str(Path(args.config).resolve()), resume=args.resume,
         resume_sha256=sha256_file(args.resume) if args.resume else None,
+        allow_batch_size_change=args.allow_batch_size_change,
         smoke_test=args.smoke_test, source_sha256={p:sha256_file(p) for p in (
             'src/data/datasets.py', 'src/data/clean_protocol.py',
             'src/trainers/clean_sequence_trainer.py', 'src/scripts/train_clean_sequence.py')},
         metric_protocol='Full-image RGB PSNR/SSIM clamped; existing raw-pred LPIPS VGG; '
                         'checkpoint selection only on grouped TRAIN holdout; tests at task boundaries',
         precision='strict FP32' if cfg['experiment'].get('strict_fp32', True) else 'default backend'))
-    trainer = CleanSequenceTrainer(cfg, manifest)
+    trainer = CleanSequenceTrainer(cfg, manifest, args.allow_batch_size_change)
     trainer.run(stop_after=args.stop_after, resume_path=args.resume)
     print(f'完成：{output.resolve()}（smoke_test={args.smoke_test}）', flush=True)
 

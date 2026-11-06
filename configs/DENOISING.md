@@ -1,5 +1,8 @@
 # DIV2K + Flickr2K 去噪
 
+当前无回放五任务实验使用新入口 `train_five_tasks.py`，参见 [FIVE_TASKS.md](FIVE_TASKS.md)。
+下文为旧入口协议，噪声种子及评估方式不要与新协议混用比较。
+
 保留原始干净图像目录，不需要生成或复制 input/gt：
 
 ```text

@@ -210,6 +210,110 @@ class CleanSequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'SHA256'):
             validate_resume(self.cfg, saved, 'different')
 
+    def test_batch_size_branch_requires_explicit_flag_and_task_boundary(self):
+        sha = sha256_file(self.cfg['data']['split_manifest'])
+        saved = dict(clean_protocol_version=1, split_sha256=sha, run_protocol=run_protocol(self.cfg),
+                     task_idx=1, in_progress=False, smoke_test=False, gpm_updated=True)
+        changed = copy.deepcopy(self.cfg)
+        for task in changed['data']['tasks']:
+            task['batch_size'] = 64
+        changed['experiment']['memory_fraction'] = .9
+        with self.assertRaisesRegex(ValueError, '训练协议'):
+            validate_resume(changed, saved, sha)
+        validate_resume(changed, saved, sha, allow_batch_size_change=True)
+        saved['in_progress'] = True
+        with self.assertRaisesRegex(ValueError, '边界'):
+            validate_resume(changed, saved, sha, allow_batch_size_change=True)
+        saved['in_progress'] = False
+        changed['train']['lr'] *= .5
+        with self.assertRaisesRegex(ValueError, '训练协议'):
+            validate_resume(changed, saved, sha, allow_batch_size_change=True)
+
+    def test_stability_replay_train_partition_and_exact_resume(self):
+        from src.trainers.stability_trainer import stability_config, StabilityTrainer
+        cfg = self.config_at('source_stability')
+        cfg['train']['epochs_per_task'] = 1
+        source_trainer = CleanSequenceTrainer(cfg, self.manifest)
+        source_trainer.run(stop_after='rainh')
+        source = Path(cfg['experiment']['output_dir'])/'task_1_final.pth'
+        cfg_a = stability_config(source, self.root/'stability_a', epochs=2,
+                                 batch_size=2, memory_per_task=2)
+        full = StabilityTrainer(cfg_a, self.manifest)
+        full.run(stop_after='dehaze', resume_path=source)
+        records = json.loads((self.root/'stability_a/replay_manifest.json').read_text())
+        for task in ('lowlight','rainh'):
+            indices = records['tasks'][task]['train_indices']
+            self.assertTrue(set(indices) <= set(self.manifest['tasks'][task]['train_indices']))
+            self.assertFalse(set(indices) & set(self.manifest['tasks'][task]['validation_indices']))
+        for p in full.teacher.parameters():
+            self.assertFalse(p.requires_grad)
+            self.assertIsNone(p.grad)
+        cfg_b = copy.deepcopy(cfg_a)
+        cfg_b['experiment']['output_dir'] = str(self.root/'stability_b')
+        interrupted = StabilityTrainer(cfg_b, self.manifest)
+        save = interrupted.save
+        def disconnect(path, *args, **kwargs):
+            save(path, *args, **kwargs)
+            if Path(path).name == 'latest.pth':
+                raise RuntimeError('stability disconnect')
+        interrupted.save = disconnect
+        with self.assertRaisesRegex(RuntimeError, 'stability disconnect'):
+            interrupted.run(stop_after='dehaze', resume_path=source)
+        resumed = StabilityTrainer(cfg_b, self.manifest)
+        resumed.run(stop_after='dehaze', resume_path=self.root/'stability_b/latest.pth')
+        self.assertEqual(full.history, resumed.history)
+        for key, value in full.model.state_dict().items():
+            self.assertTrue(torch.equal(value, resumed.model.state_dict()[key]), key)
+
+    def test_bounded_lora_no_old_training_loader_and_exact_resume(self):
+        from src.trainers.bounded_lora_trainer import bounded_config, BoundedLoRATrainer
+        cfg = self.config_at('source_bound')
+        cfg['train']['epochs_per_task'] = 1
+        source_trainer = CleanSequenceTrainer(cfg,self.manifest)
+        source_trainer.run(stop_after='rainh')
+        source = Path(cfg['experiment']['output_dir'])/'task_1_final.pth'
+        cfg_a = bounded_config(source,self.root/'bound_a',max_relative_update=1e-6,epochs=2,batch_size=2)
+        cfg_a['eval']['validation_interval'] = 1
+        class NoReplayTrainer(BoundedLoRATrainer):
+            def loader(self, task, role):
+                if role == 'train' and task != 'dehaze':
+                    raise AssertionError('Old training data accessed')
+                return super().loader(task,role)
+        full = NoReplayTrainer(cfg_a,self.manifest)
+        original_split = full.split_sha
+        full.split_sha = 'changed'
+        with self.assertRaisesRegex(ValueError,'SHA256'):
+            full.restore(source)
+        full.split_sha = original_split
+        full.run(stop_after='dehaze',resume_path=source)
+        self.assertFalse(hasattr(full,'teacher'))
+        self.assertFalse(hasattr(full,'memories'))
+        for row in full.history:
+            self.assertLessEqual(row['update_bound']['max_after'],1e-6*(1+1e-5))
+            self.assertEqual(row['validation']['psnr'],row['validation']['tasks']['dehaze']['psnr'])
+        cfg_b = copy.deepcopy(cfg_a)
+        cfg_b['experiment']['output_dir'] = str(self.root/'bound_b')
+        interrupted = NoReplayTrainer(cfg_b,self.manifest)
+        save = interrupted.save
+        def disconnect(path,*args,**kwargs):
+            save(path,*args,**kwargs)
+            if Path(path).name == 'latest.pth':
+                raise RuntimeError('bound disconnect')
+        interrupted.save = disconnect
+        with self.assertRaisesRegex(RuntimeError,'bound disconnect'):
+            interrupted.run(stop_after='dehaze',resume_path=source)
+        latest = self.root/'bound_b/latest.pth'
+        saved = torch.load(latest,map_location='cpu',weights_only=False)
+        changed = copy.deepcopy(cfg_b)
+        changed['update_bound']['max_relative_update'] = .1
+        with self.assertRaisesRegex(ValueError,'训练协议'):
+            validate_resume(changed,saved,sha256_file(self.cfg['data']['split_manifest']))
+        resumed = NoReplayTrainer(cfg_b,self.manifest)
+        resumed.run(stop_after='dehaze',resume_path=latest)
+        self.assertEqual(full.history,resumed.history)
+        for key,value in full.model.state_dict().items():
+            self.assertTrue(torch.equal(value,resumed.model.state_dict()[key]),key)
+
     def test_preparer_rejects_train_test_gt_overlap(self):
         row = self.manifest['tasks']['lowlight']['train_records'][0]
         target = Path(self.manifest['tasks']['lowlight']['test_records'][0]['gt'])
@@ -218,6 +322,144 @@ class CleanSequenceTests(unittest.TestCase):
         cfg['data']['split_manifest'] = str(self.root/'other_split.json')
         with self.assertRaisesRegex(ValueError, '训练/测试存在'):
             prepare_splits(cfg, workers=1)
+
+    def test_memory_source_common_weights_counts_and_no_replay_resume(self):
+        from src.trainers.memory_source_trainer import memory_source_config,MemorySourceTrainer,non_memory_fingerprint
+        cfg=self.config_at('source_memory')
+        cfg['train']['epochs_per_task']=1
+        original=CleanSequenceTrainer(cfg,self.manifest)
+        original.run(stop_after='lowlight')
+        source=Path(cfg['experiment']['output_dir'])/'task_0_final.pth'
+        fingerprints=[];budgets=[]
+        class NoReplayTrainer(MemorySourceTrainer):
+            bootstrap=False
+            def bootstrap_memory(self):
+                self.bootstrap=True
+                try:return super().bootstrap_memory()
+                finally:self.bootstrap=False
+            def loader(self,task,role):
+                if role=='train' and task=='lowlight' and not self.bootstrap:
+                    raise AssertionError('Old training images accessed after task0 boundary')
+                return super().loader(task,role)
+        for kind in ('raw','frequency'):
+            config=memory_source_config(source,self.root/f'memory_{kind}',kind,epochs=2,batch_size=2)
+            config['eval']['validation_interval']=1
+            trainer=NoReplayTrainer(config,self.manifest)
+            trainer.restore(source)
+            fingerprints.append(non_memory_fingerprint(trainer.model))
+            budgets.append(json.loads((Path(trainer.output_dir)/'task_0_memory_bootstrap.json').read_text())['columns'])
+        self.assertEqual(fingerprints[0],fingerprints[1])
+        self.assertEqual(budgets[0],budgets[1])
+        self.assertEqual(fingerprints[0],non_memory_fingerprint(original.model))
+        # Resume bootstrap checkpoint without reopening the LSRW train loader.
+        reference_cfg=memory_source_config(source,self.root/'memory_ref','raw',epochs=2,batch_size=2)
+        reference_cfg['eval']['validation_interval']=1
+        reference=NoReplayTrainer(reference_cfg,self.manifest)
+        reference.run(stop_after='dehaze',resume_path=self.root/'memory_raw/task_0_final.pth')
+        cfg_b=copy.deepcopy(reference_cfg);cfg_b['experiment']['output_dir']=str(self.root/'memory_interrupt')
+        interrupted=NoReplayTrainer(cfg_b,self.manifest)
+        save=interrupted.save
+        def disconnect(path,*args,**kwargs):
+            save(path,*args,**kwargs)
+            if Path(path).name=='latest.pth':raise RuntimeError('memory disconnect')
+        interrupted.save=disconnect
+        with self.assertRaisesRegex(RuntimeError,'memory disconnect'):
+            interrupted.run(stop_after='dehaze',resume_path=self.root/'memory_raw/task_0_final.pth')
+        saved=torch.load(self.root/'memory_interrupt/latest.pth',map_location='cpu',weights_only=False)
+        changed=copy.deepcopy(cfg_b);changed['odr_lora']['gpm_statistics']='frequency'
+        with self.assertRaisesRegex(ValueError,'训练协议'):
+            validate_resume(changed,saved,sha256_file(self.cfg['data']['split_manifest']))
+        resumed=NoReplayTrainer(cfg_b,self.manifest)
+        resumed.run(stop_after='dehaze',resume_path=self.root/'memory_interrupt/latest.pth')
+        self.assertEqual(reference.history,resumed.history)
+        for key,value in reference.model.state_dict().items():
+            self.assertTrue(torch.equal(value,resumed.model.state_dict()[key]),key)
+
+    def test_retention_branch_same_weights_old_span_and_exact_resume(self):
+        from src.trainers.memory_source_trainer import memory_source_config,MemorySourceTrainer
+        from src.trainers.memory_retention_trainer import retention_config,MemoryRetentionTrainer
+        cfg=self.config_at('retention_origin');cfg['train']['epochs_per_task']=1
+        first=CleanSequenceTrainer(cfg,self.manifest);first.run(stop_after='lowlight')
+        source=Path(first.output_dir)/'task_0_final.pth'
+        run=self.root/'retention_raw'
+        memory_cfg=memory_source_config(source,run,epochs=1,batch_size=2)
+        raw=MemorySourceTrainer(memory_cfg,self.manifest);raw.run(stop_after='rainh',resume_path=source)
+        class GuardedTrainer(MemoryRetentionTrainer):
+            boundary=False
+            def rebuild_rainh_boundary(self,reference):
+                self.boundary=True
+                try:return super().rebuild_rainh_boundary(reference)
+                finally:self.boundary=False
+            def loader(self,task,role):
+                if role=='train' and task!='dehaze' and not (task=='rainh' and self.boundary):
+                    raise AssertionError('Old training images accessed outside boundary')
+                return super().loader(task,role)
+        baseline_cfg=retention_config(run,self.root/'retention_control','compressed',epochs=2,batch_size=2)
+        baseline=GuardedTrainer(baseline_cfg,self.manifest);baseline.restore(run/'task_1_best.pth')
+        for n,m in raw.model.named_modules():
+            if hasattr(m,'dual_gpms'):
+                target=dict(baseline.model.named_modules())[n].dual_gpms['global'].basis
+                torch.testing.assert_close(m.dual_gpms['global'].basis,target,rtol=1e-5,atol=1e-5)
+        candidate_cfg=retention_config(run,self.root/'retention_a','preserve',epochs=2,batch_size=2)
+        candidate_cfg['eval']['validation_interval']=1
+        full=GuardedTrainer(candidate_cfg,self.manifest)
+        full.run(stop_after='dehaze',resume_path=run/'task_1_best.pth')
+        report=json.loads((Path(full.output_dir)/'rainh_boundary_rebuild.json').read_text())
+        self.assertTrue(report['same_non_memory_tensors'])
+        for layer in report['layers'].values():
+            self.assertLess(layer['old_span_residual'],1e-5)
+            self.assertLessEqual(layer['rank_after'],layer['capacity'])
+        cfg_b=copy.deepcopy(candidate_cfg);cfg_b['experiment']['output_dir']=str(self.root/'retention_b')
+        interrupted=GuardedTrainer(cfg_b,self.manifest);save=interrupted.save
+        def disconnect(path,*args,**kwargs):
+            save(path,*args,**kwargs)
+            if Path(path).name=='latest.pth' and args[0]==2:raise RuntimeError('retention disconnect')
+        interrupted.save=disconnect
+        with self.assertRaisesRegex(RuntimeError,'retention disconnect'):
+            interrupted.run(stop_after='dehaze',resume_path=run/'task_1_best.pth')
+        latest=self.root/'retention_b/latest.pth'
+        saved=torch.load(latest,map_location='cpu',weights_only=False)
+        changed=copy.deepcopy(cfg_b);changed['odr_lora']['gpm_update_rule']='bounded_svd'
+        with self.assertRaisesRegex(ValueError,'训练协议'):
+            validate_resume(changed,saved,sha256_file(self.cfg['data']['split_manifest']))
+        resumed=GuardedTrainer(cfg_b,self.manifest);resumed.run(stop_after='dehaze',resume_path=latest)
+        self.assertEqual(full.history,resumed.history)
+        for n,v in full.model.state_dict().items():self.assertTrue(torch.equal(v,resumed.model.state_dict()[n]),n)
+
+    def test_balanced_quota_same_covariance_and_exact_resume(self):
+        from src.trainers.memory_source_trainer import memory_source_config,MemorySourceTrainer
+        from src.trainers.memory_retention_trainer import retention_config,MemoryRetentionTrainer
+        cfg=self.config_at('balanced_origin');cfg['train']['epochs_per_task']=1
+        first=CleanSequenceTrainer(cfg,self.manifest);first.run(stop_after='lowlight')
+        source=Path(first.output_dir)/'task_0_final.pth';run=self.root/'balanced_raw'
+        raw=MemorySourceTrainer(memory_source_config(source,run,epochs=1,batch_size=2),self.manifest)
+        raw.run(stop_after='rainh',resume_path=source)
+        a=retention_config(run,self.root/'balanced_a','balanced',epochs=2,batch_size=2,old_fraction=.5)
+        a['eval']['validation_interval']=1
+        full=MemoryRetentionTrainer(a,self.manifest);full.run(resume_path=run/'task_1_best.pth')
+        b=retention_config(run,self.root/'balanced_old100','balanced',epochs=2,batch_size=2,old_fraction=1.)
+        baseline=MemoryRetentionTrainer(b,self.manifest);baseline.restore(run/'task_1_best.pth')
+        report_a=json.loads((Path(full.output_dir)/'task_1_balanced_memory.json').read_text())['layers']
+        report_b=json.loads((Path(baseline.output_dir)/'task_1_balanced_memory.json').read_text())['layers']
+        for n,r in report_a.items():
+            self.assertEqual(r['covariance_sha256'],report_b[n]['covariance_sha256'])
+            self.assertLessEqual(r['rank'],r['cap'])
+            self.assertLessEqual(r['retained_old_rank'],r['old_quota'])
+        interrupted_cfg=copy.deepcopy(a);interrupted_cfg['experiment']['output_dir']=str(self.root/'balanced_interrupt')
+        interrupted=MemoryRetentionTrainer(interrupted_cfg,self.manifest);save=interrupted.save
+        def disconnect(path,*args,**kwargs):
+            save(path,*args,**kwargs)
+            if Path(path).name=='latest.pth' and args[0]==2:raise RuntimeError('balanced disconnect')
+        interrupted.save=disconnect
+        with self.assertRaisesRegex(RuntimeError,'balanced disconnect'):
+            interrupted.run(resume_path=run/'task_1_best.pth')
+        latest=self.root/'balanced_interrupt/latest.pth';saved=torch.load(latest,map_location='cpu',weights_only=False)
+        changed=copy.deepcopy(interrupted_cfg);changed['memory_retention']['old_fraction']=.75
+        with self.assertRaisesRegex(ValueError,'训练协议'):
+            validate_resume(changed,saved,sha256_file(self.cfg['data']['split_manifest']))
+        resumed=MemoryRetentionTrainer(interrupted_cfg,self.manifest);resumed.run(resume_path=latest)
+        self.assertEqual(full.history,resumed.history)
+        for n,v in full.model.state_dict().items():self.assertTrue(torch.equal(v,resumed.model.state_dict()[n]),n)
 
 
 if __name__ == '__main__':
