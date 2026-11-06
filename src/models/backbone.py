@@ -5,6 +5,26 @@ import torch.nn.functional as F
 from .odr_lora import ODRLoRAConv2d
 
 
+class PixelChannelNorm(nn.Module):
+    """Normalize channels at each pixel, never pool statistics across the image."""
+    def __init__(self, channels, eps=1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(dim=1, keepdim=True)
+        var = (x - mean).square().mean(dim=1, keepdim=True)
+        return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
+
+
+class BoundedGate(nn.Module):
+    def forward(self, x):
+        value, gate = x.chunk(2, dim=1)
+        return value * torch.tanh(gate)
+
+
 class SimpleGate(nn.Module):
     """NAFNet 中的 SimpleGate：将通道一分为二，相乘。"""
     def forward(self, x):
@@ -18,10 +38,13 @@ class SCA(nn.Module):
         super().__init__()
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.conv = nn.Conv2d(channels, channels, 1, bias=True)
+        self.bounded = False
 
     def forward(self, x):
         y = self.pool(x)
         y = self.conv(y)
+        if self.bounded:
+            y = 2 * torch.sigmoid(y)
         return x * y
 
 
@@ -133,6 +156,7 @@ class NAFBlock(nn.Module):
         self.norm2 = nn.GroupNorm(1, channels)
         self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
         self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.bounded_residual = False
 
     def forward(self, x, task_idx=None):
         residual = x
@@ -141,13 +165,15 @@ class NAFBlock(nn.Module):
         x = self.gate(x)
         x = self.conv2(x, task_idx)
         x = self.sca(x)
-        x = x * self.beta + residual
+        beta = torch.tanh(self.beta) if self.bounded_residual else self.beta
+        x = x * beta + residual
         residual = x
         x = self.norm2(x)
         x = self.ffn1(x, task_idx)
         x = self.gate(x)
         x = self.ffn2(x, task_idx)
-        return x * self.gamma + residual
+        gamma = torch.tanh(self.gamma) if self.bounded_residual else self.gamma
+        return x * gamma + residual
 
 
 class NAFNet(nn.Module):

@@ -1,5 +1,7 @@
 # 干净配对重训 LSRW，再复验 RainH → Haze4K
 
+无回放稳定骨干结构对照及batch64命令，参见 [STABLE_BACKBONE.md](STABLE_BACKBONE.md)。
+
 从balanced50三任务断点继续去噪/GOPRO的五任务实验，参见 [FIVE_TASKS.md](FIVE_TASKS.md)。
 
 历史空间/当前任务残差的配额对照，参见 [BALANCED_MEMORY.md](BALANCED_MEMORY.md)。

@@ -28,6 +28,10 @@ def main():
     parser.add_argument('--config', default='configs/clean_lsrw_rainh_haze4k.yaml')
     parser.add_argument('--output-dir')
     parser.add_argument('--resume')
+    parser.add_argument('--architecture', choices=('legacy', 'stable_v1'),
+                        help='Architecture ablation; changing it requires training from task0')
+    parser.add_argument('--gpm-statistics', choices=('frequency', 'raw'))
+    parser.add_argument('--gpm-update-rule', choices=('legacy', 'bounded_svd'))
     parser.add_argument('--allow-batch-size-change', action='store_true',
                         help='Allow batch size / memory quota changes at a completed task; use a fresh output directory')
     parser.add_argument('--stop-after', choices=('lowlight', 'rainh', 'dehaze'))
@@ -38,6 +42,12 @@ def main():
     if args.allow_batch_size_change and not args.resume:
         parser.error('--allow-batch-size-change 需要 --resume 指向已完成任务的断点')
     cfg = configure_method(yaml.safe_load(Path(args.config).read_text()), args.method)
+    if args.architecture is not None:
+        cfg['model']['architecture'] = args.architecture
+    if args.gpm_statistics is not None:
+        cfg['odr_lora']['gpm_statistics'] = args.gpm_statistics
+    if args.gpm_update_rule is not None:
+        cfg['odr_lora']['gpm_update_rule'] = args.gpm_update_rule
     if args.output_dir:
         cfg['experiment']['output_dir'] = args.output_dir
     if args.incremental_seed is not None:
@@ -48,6 +58,7 @@ def main():
         if not args.output_dir:
             parser.error('--smoke-test 必须显式设置独立 --output-dir')
         cfg['train'].update(epochs_per_task=1, max_steps_per_epoch=2, calibration_batches=1, gpm_batches=1)
+        cfg['train'].pop('epochs_by_task', None)
         cfg['eval'].update(validation_interval=1, max_images=2)
         cfg['data']['num_workers'] = 0
         for task in cfg['data']['tasks']:
@@ -58,6 +69,10 @@ def main():
         raise ValueError('本协议使用无 warmup 的 cosine scheduler，不静默忽略其他设置')
     if min(cfg['train'][k] for k in ('epochs_per_task', 'calibration_batches', 'gpm_batches')) < 1:
         raise ValueError('训练与校准预算必须为正')
+    budgets = cfg['train'].get('epochs_by_task', {})
+    if (not isinstance(budgets, dict) or set(budgets) - {'lowlight', 'rainh', 'dehaze'}
+            or any(type(v) is not int or v < 1 for v in budgets.values())):
+        raise ValueError('epochs_by_task需要任务名到正整数的映射')
     if cfg['eval']['validation_interval'] < 1:
         raise ValueError('validation_interval 必须为正')
     if any(t['batch_size'] < 1 or t['patch_size'] < 16 for t in cfg['data']['tasks']):
@@ -104,7 +119,8 @@ def main():
         allow_batch_size_change=args.allow_batch_size_change,
         smoke_test=args.smoke_test, source_sha256={p:sha256_file(p) for p in (
             'src/data/datasets.py', 'src/data/clean_protocol.py',
-            'src/trainers/clean_sequence_trainer.py', 'src/scripts/train_clean_sequence.py')},
+            'src/trainers/clean_sequence_trainer.py', 'src/scripts/train_clean_sequence.py',
+            'src/models/backbone.py', 'src/models/restoration_net.py')},
         metric_protocol='Full-image RGB PSNR/SSIM clamped; existing raw-pred LPIPS VGG; '
                         'checkpoint selection only on grouped TRAIN holdout; tests at task boundaries',
         precision='strict FP32' if cfg['experiment'].get('strict_fp32', True) else 'default backend'))

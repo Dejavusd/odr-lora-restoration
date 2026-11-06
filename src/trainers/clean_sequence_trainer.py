@@ -350,7 +350,9 @@ class CleanSequenceTrainer(IncrementalTrainer):
         stop = self.task_order.index(stop_after) if stop_after else len(self.task_order)-1
         for idx in range(start, stop+1):
             saved = state if state is not None and state.get('in_progress') and idx == start else None
-            self.train_task(self.task_order[idx], idx, self.cfg['train']['epochs_per_task'], saved)
+            epochs = self.cfg['train'].get('epochs_by_task', {}).get(
+                self.task_order[idx], self.cfg['train']['epochs_per_task'])
+            self.train_task(self.task_order[idx], idx, epochs, saved)
             state = None
         # Keep the live checkpoint and its GPM intact; export a separate copy.
         exported = copy.deepcopy(self.model)

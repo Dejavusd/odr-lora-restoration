@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .backbone import NAFNet
+from .backbone import NAFNet, NAFBlock, PixelChannelNorm, BoundedGate
 from .odr_lora import ODRLoRAConv2d
 
 
@@ -14,6 +14,9 @@ class RestorationNet(nn.Module):
         m = cfg['model']
         o = cfg['odr_lora']
         self.new_task_private_rank_base = m.get('new_task_private_rank_base')
+        architecture = m.get('architecture', 'legacy')
+        if architecture not in ('legacy', 'stable_v1'):
+            raise ValueError(f'Unknown architecture: {architecture}')
 
         # 频带级别：1 -> 4 子带，2 -> 7 子带
         freq_level = o.get('freq_level', 2)
@@ -38,6 +41,15 @@ class RestorationNet(nn.Module):
             skip_orthogonal=o['skip_orthogonal'],
             share_subspace=o['share_subspace'],
         )
+        if architecture == 'stable_v1':
+            for block in self.backbone.modules():
+                if isinstance(block, NAFBlock):
+                    channels = block.beta.shape[1]
+                    block.norm1 = PixelChannelNorm(channels)
+                    block.norm2 = PixelChannelNorm(channels)
+                    block.gate = BoundedGate()
+                    block.sca.bounded = True
+                    block.bounded_residual = True
         for module in self.modules():
             if isinstance(module, ODRLoRAConv2d):
                 module.full_update_protection = o.get('full_update_protection', False)

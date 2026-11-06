@@ -1,0 +1,61 @@
+experiment:
+  name: stable_backbone_ablation
+  output_dir: ./outputs/stable_v1_b64
+  seed: 42
+  incremental_seed: 42
+  device: cuda
+  memory_fraction: 0.9
+  strict_fp32: true
+data:
+  root: ./data
+  split_manifest: ./outputs/clean_splits_v1/manifest.json
+  split_seed: 20261029
+  validation_fraction: 0.1
+  num_workers: 4
+  tasks:
+    - {name: lowlight, dataset: LSRW, train_split: train, test_split: test, patch_size: 128, batch_size: 64}
+    - {name: rainh, dataset: RainH, train_split: train, test_split: test, patch_size: 128, batch_size: 64}
+    - {name: dehaze, dataset: Haze4K, train_split: train, test_split: test, patch_size: 128, batch_size: 64}
+model:
+  architecture: stable_v1
+  backbone: NAFNet
+  base_channels: 16
+  num_blocks: [2, 4, 8, 4, 2]
+  kernel_size: 3
+  share_rank: 8
+  private_rank_base: 8
+  new_task_private_rank_base: 16
+  rank_gamma: 1.5
+  rank_min: 4
+  rank_max: 32
+odr_lora:
+  full_update_protection: true
+  basis_construction: projected_svd
+  basis_rank_tolerance: 1.0e-5
+  gpm_max_basis: 32
+  gpm_statistics: raw
+  gpm_update_rule: bounded_svd
+  spatial_blocks: [2, 2]
+  spatial_sample_ratio: 0.1
+  freq_level: 2
+  freq_decomp: dwt
+  adaptive_lambda_min: 0.5
+  adaptive_lambda_max: 1.0
+  skip_orthogonal: true
+  share_subspace: true
+train:
+  epochs_per_task: 20
+  epochs_by_task: {lowlight: 400, rainh: 20, dehaze: 20}
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 0
+  eta_min: 1.0e-6
+  grad_clip: 1.0
+  calibration_batches: 6
+  gpm_batches: 6
+  loss: {l1: 1.0, perceptual: 0.1}
+eval:
+  validation_interval: 5
+  tile_size: 0
+  tile_overlap: 64
