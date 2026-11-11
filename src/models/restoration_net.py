@@ -50,6 +50,15 @@ class RestorationNet(nn.Module):
                     block.gate = BoundedGate()
                     block.sca.bounded = True
                     block.bounded_residual = True
+        skip_protection = o.get('skip_protection', 'fused')
+        if skip_protection not in ('fused', 'branch_v1'):
+            raise ValueError('Unknown skip protection mode')
+        if skip_protection == 'branch_v1' and (
+                o.get('gpm_statistics') != 'raw' or o.get('gpm_update_rule') != 'bounded_svd'
+                or not o.get('full_update_protection') or o.get('basis_construction') != 'projected_svd'
+                or not o.get('skip_orthogonal')):
+            raise ValueError('branch_v1 requires raw bounded_svd, projected_svd and full skip protection')
+        self.backbone.skip_protection = skip_protection
         for module in self.modules():
             if isinstance(module, ODRLoRAConv2d):
                 module.full_update_protection = o.get('full_update_protection', False)
@@ -62,10 +71,12 @@ class RestorationNet(nn.Module):
                     raise ValueError('Invalid basis construction or protection setting')
                 module.gpm_statistics = o.get('gpm_statistics', 'frequency')
                 module.gpm_update_rule = o.get('gpm_update_rule', 'legacy')
+                if module.gpm_update_rule == 'task_bank' and module.gpm_statistics != 'raw':
+                    raise ValueError('Per-task memory requires real spatial statistics')
                 module.gpm_sample_columns = int(o.get('gpm_sample_columns', 512))
                 capacity = int(o.get('gpm_max_basis', m['rank_max']))
                 if (module.gpm_statistics not in ('frequency', 'raw')
-                        or module.gpm_update_rule not in ('legacy','bounded_svd','bounded_preserving','bounded_balanced')
+                        or module.gpm_update_rule not in ('legacy','bounded_svd','bounded_preserving','bounded_balanced','task_bank')
                         or capacity < 1 or module.gpm_sample_columns < 1):
                     raise ValueError('Invalid GPM statistics, capacity or sample count')
                 module.dual_gpms['global'].max_basis = min(capacity, module.d)

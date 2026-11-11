@@ -5,6 +5,34 @@ import torch.nn.functional as F
 from .odr_lora import ODRLoRAConv2d
 
 
+@torch.no_grad()
+def normalized_skip_components(norm, decoder, skip):
+    """Split the *actual* post-fusion normalization, not norm(d)+norm(s).
+
+    Both contributions use the variance of d+s; affine bias is split equally.
+    The second component absorbs numerical rounding against the real norm output.
+    This is an additive coordinate decomposition, not two independent forwards.
+    """
+    if decoder.shape != skip.shape:
+        raise ValueError('Skip branches must have the same shape')
+    fused = decoder + skip
+    if isinstance(norm, PixelChannelNorm):
+        dims = (1,)
+        weight, bias = norm.weight, norm.bias
+    elif isinstance(norm, nn.GroupNorm) and norm.num_groups == 1:
+        dims = (1, 2, 3)
+        weight = norm.weight[None, :, None, None] if norm.affine else 1.
+        bias = norm.bias[None, :, None, None] if norm.affine else 0.
+    else:
+        raise ValueError('Branch protection supports PixelChannelNorm or GroupNorm(1,C) only')
+    mean = fused.mean(dims, keepdim=True)
+    variance = (fused - mean).square().mean(dims, keepdim=True)
+    first = (decoder - decoder.mean(dims, keepdim=True)) * torch.rsqrt(variance + norm.eps)
+    first = first * weight + .5 * bias
+    actual = norm(fused)
+    return first.detach(), (actual - first).detach(), actual.detach()
+
+
 class PixelChannelNorm(nn.Module):
     """Normalize channels at each pixel, never pool statistics across the image."""
     def __init__(self, channels, eps=1e-5):
@@ -209,6 +237,8 @@ class NAFNet(nn.Module):
         self.dec_blocks = nn.ModuleList()
         self.downs = nn.ModuleList()
         self.ups = nn.ModuleList()
+        self.skip_protection = 'fused'
+        self._skip_branch_capture = None
 
         chs = [base_channels * (2 ** i) for i in range(self.num_levels)]
 
@@ -329,7 +359,13 @@ class NAFNet(nn.Module):
         for i in range(self.num_levels - 1, -1, -1):
             if i < self.num_levels - 1:
                 x = self.ups[self.num_levels - 1 - i - 1](x)
+                decoder = x
                 x = x + skips[i]
+                blocks = self.dec_blocks[self.num_levels - 1 - i]
+                if self._skip_branch_capture is not None and len(blocks):
+                    name = f'dec_blocks.{self.num_levels - 1 - i}.0.conv1'
+                    self._skip_branch_capture[name] = normalized_skip_components(
+                        blocks[0].norm1, decoder, skips[i])
             for block in self.dec_blocks[self.num_levels - 1 - i]:
                 x = block(x, task_idx)
 
@@ -366,7 +402,7 @@ class NAFNet(nn.Module):
                     module.task_A[current_idx].requires_grad = True
 
     # ---------- 校准辅助：捕获每个 ODRLoRAConv2d 的真实输入 ----------
-    def _capture_layer_inputs(self, x):
+    def _capture_layer_inputs(self, x, include_branches=False):
         """跑一次前向，用 hook 捕获每个 ODRLoRAConv2d 的真实输入。"""
         inputs = {}
         hooks = []
@@ -381,16 +417,20 @@ class NAFNet(nn.Module):
                 hooks.append(module.register_forward_hook(make_hook(name)))
 
         was_training = self.training
+        previous_capture = self._skip_branch_capture
+        branch_inputs = {} if include_branches else None
+        self._skip_branch_capture = branch_inputs
         self.eval()
         try:
             with torch.no_grad():
                 _ = self.forward(x)
         finally:
+            self._skip_branch_capture = previous_capture
             for h in hooks:
                 h.remove()
             if was_training:
                 self.train()
-        return inputs
+        return (inputs, branch_inputs) if include_branches else inputs
 
     def calibrate(self, x, current_idx, task_similarity=0.0):
         # 每层用各自的真实输入做校准，避免把 3 通道原图传给 16 通道的层
@@ -401,10 +441,19 @@ class NAFNet(nn.Module):
 
     def update_gpm(self, x, current_idx):
         # 同样每层用各自的真实输入
-        inputs = self._capture_layer_inputs(x)
+        if self.skip_protection == 'branch_v1':
+            inputs, branch_inputs = self._capture_layer_inputs(x, include_branches=True)
+        else:
+            inputs, branch_inputs = self._capture_layer_inputs(x), {}
         for name, module in self.named_modules():
             if isinstance(module, ODRLoRAConv2d) and name in inputs:
-                module.update_gpm(inputs[name], current_idx)
+                if name in branch_inputs:
+                    first, second, actual = branch_inputs[name]
+                    if not torch.allclose(actual, inputs[name], rtol=1e-5, atol=1e-5):
+                        raise RuntimeError(f'Branch coordinates do not match real convolution input: {name}')
+                    module.update_gpm(inputs[name], current_idx, branches=(first, second))
+                else:
+                    module.update_gpm(inputs[name], current_idx)
 
     def merge_task(self, idx):
         for module in self.modules():

@@ -1,5 +1,9 @@
 # 无回放稳定骨干对照（stable_v1）
 
+逐任务平衡摘要与等权PCA的无回放匹配对照，参见 [TASK_BALANCED_MEMORY.md](TASK_BALANCED_MEMORY.md)。
+
+在同一LSRW权重上单独测试跳跃分支感知保护（B），参见 [SKIP_BRANCH.md](SKIP_BRANCH.md)。
+
 目标是减少骨干对LoRA更新的非线性放大，而不是声称已消除遗忘。
 此前的日志显示新任务后旧任务下降，并伴随极端原始输出；这支持进行结构对照，
 但尚不足以证明具体层是遗忘的根因。

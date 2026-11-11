@@ -91,6 +91,7 @@ class MemorySourceTrainer(CleanSequenceTrainer):
             self.model.update_gpm(batch['input'].to(self.device),0)
             self.logger.info(f'BOOTSTRAP memory {i+1}/{self.cfg["train"]["gpm_batches"]}')
             if i+1>=self.cfg['train']['gpm_batches']:break
+        self.finalize_memory(0)
         error=float((self.model(sample,-1)-before).abs().max())
         after_fingerprint=non_memory_fingerprint(self.model)
         if error!=0 or before_fingerprint!=after_fingerprint:
@@ -99,7 +100,7 @@ class MemorySourceTrainer(CleanSequenceTrainer):
             if isinstance(m,ODRLoRAConv2d) and m.dual_gpms['global'].basis is None:
                 raise RuntimeError('任务0记忆为空')
         atomic_json(Path(self.output_dir)/'task_0_memory_bootstrap.json',dict(
-            statistics=self.cfg['memory_source']['statistics'],rule='bounded_svd',capacity=32,
+            statistics=self.cfg['memory_source']['statistics'],rule=self.cfg['odr_lora']['gpm_update_rule'],capacity=32,
             before_non_memory_sha256=before_fingerprint,after_non_memory_sha256=after_fingerprint,
             forward_max_error=error,columns=self.memory_counts(),
             note='LSRW TRAIN at task0 memory boundary only; no optimizer or weight update'))
@@ -128,5 +129,5 @@ class MemorySourceTrainer(CleanSequenceTrainer):
         self.clear_memory_counts()
         super()._finish_task(loader,idx)
         atomic_json(Path(self.output_dir)/f'task_{idx}_memory_columns.json',dict(
-            statistics=self.cfg['memory_source']['statistics'],rule='bounded_svd',
+            statistics=self.cfg['memory_source']['statistics'],rule=self.cfg['odr_lora']['gpm_update_rule'],
             capacity=32,columns=self.memory_counts()))

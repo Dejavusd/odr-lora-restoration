@@ -133,6 +133,7 @@ class ODRLoRAConv2d(nn.Module):
         self.gpm_update_rule = 'legacy'
         self.gpm_sample_columns = 512
         self.gpm_column_history = []
+        self.skip_column_history = []
         self._merged_tasks = set()
         self._init_weights()
 
@@ -353,12 +354,14 @@ class ODRLoRAConv2d(nn.Module):
                 B.copy_(B - (B @ basis) @ basis.T)
 
     @torch.no_grad()
-    def update_gpm(self, x, current_idx):
+    def update_gpm(self, x, current_idx, branches=None):
         """训练完当前任务后，用当前任务输入更新 DualGPM。"""
         self.eval()
+        if branches is not None and (self.gpm_statistics != 'raw' or self.gpm_update_rule != 'bounded_svd'):
+            raise ValueError('Branch memory requires raw statistics and bounded_svd')
         if self.is_skip_fusion and not self.skip_orthogonal:
             return
-        if self.gpm_update_rule in ('bounded_svd','bounded_preserving','bounded_balanced'):
+        if self.gpm_update_rule in ('bounded_svd','bounded_preserving','bounded_balanced','task_bank'):
             # Matched ablation: same budget and SAME merge rule for both sources.
             matrices = [h for _,_,h in self._extract_statistics(x) if h.numel()]
             if not matrices:
@@ -373,8 +376,33 @@ class ODRLoRAConv2d(nn.Module):
                 H = frequency
             indices = torch.linspace(0,H.shape[1]-1,count,device=H.device).long()
             H = H[:,indices]
+            if branches is not None:
+                if len(branches) != 2 or any(b.shape != x.shape for b in branches):
+                    raise ValueError('Invalid normalized branch components')
+                error = float((branches[0] + branches[1] - x).abs().max())
+                if not torch.allclose(branches[0] + branches[1], x, rtol=1e-4, atol=1e-5):
+                    raise RuntimeError('Normalized branch decomposition does not reconstruct convolution input')
+                if count < 4:
+                    raise ValueError('At least 4 sampled columns are required for branch protection')
+                # Keep exactly the SAME total sampled columns as the fused arm.
+                # Half fused + quarter decoder + quarter skip, with shared spatial indices.
+                each = count // 4
+                fused_count = count - 2 * each
+                positions = torch.linspace(0, count - 1, fused_count, device=x.device).long()
+                branch_positions = torch.linspace(0, count - 1, each, device=x.device).long()
+                components = [self.raw_input_matrix(b)[:, indices][:, branch_positions] for b in branches]
+                H = torch.cat([H[:, positions], *components], dim=1)
+                if not torch.isfinite(H).all():
+                    raise FloatingPointError('Non-finite branch memory statistics')
+                self.skip_column_history.append(dict(total=count, fused=fused_count,
+                    decoder=each, skip=each, reconstruction_max_error=error))
             self.gpm_column_history.append(H.shape[1])
-            if self.gpm_update_rule == 'bounded_balanced':
+            if self.gpm_update_rule == 'task_bank':
+                accumulator = getattr(self, '_task_sketch_accumulator', None)
+                if accumulator is None:
+                    raise RuntimeError('Task sketch collection must be initialized at the boundary')
+                accumulator.add(H)
+            elif self.gpm_update_rule == 'bounded_balanced':
                 self.dual_gpms['global'].accumulate_balanced(H)
             elif self.gpm_update_rule == 'bounded_preserving':
                 self.dual_gpms['global'].update_preserving(H)

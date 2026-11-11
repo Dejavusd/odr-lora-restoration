@@ -1,0 +1,38 @@
+{
+  "scope": "Conditional Haze4K seed replication given fixed LSRW/RainH weights and frozen snapshots",
+  "caution": "Observed seed42 may be included as exploratory reference. Small n is not proof of statistical significance.",
+  "sources_sha256": {
+    "outputs/task_balanced_b64/task_1_final.pth": "7f6280aa35c3e846d044db570126a6f70f73894bb317ccd3f63e5b580bd2e88f",
+    "outputs/task_memory_replicates/balanced_seed7/run_manifest.json": "f13055ea57d789548f6e33325d0488574dd9e3f19c54f2e3ab7316973780c601",
+    "outputs/task_memory_replicates/balanced_seed7/continual_metrics.json": "3769fdd120ec014cd90c8db708244879da2f964350a474c52ee7259449579e7c",
+    "outputs/task_memory_replicates/balanced_seed7/task_1_final.pth": "4b862f1231e78f633d3dd592d2434a277a2931a20b3ec19312c7b179e70e79af",
+    "outputs/task_memory_replicates/balanced_seed7/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1",
+    "outputs/task_memory_replicates/mean_pca_seed7/run_manifest.json": "995fc7181d2a101b478e3dc358a53f683d5d37a993cd36942497c9ee858bd6c0",
+    "outputs/task_memory_replicates/mean_pca_seed7/continual_metrics.json": "2083f1792ba7f7993cb2671a0cb6039c2dee16f8580ea56b26543c8e4de92633",
+    "outputs/task_memory_replicates/mean_pca_seed7/task_1_final.pth": "88c9aa72cef9704fa7bf534ce71fac551361aff0620a95347c73bc6ab749dbda",
+    "outputs/task_memory_replicates/mean_pca_seed7/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1",
+    "outputs/task_memory_replicates/balanced_seed2026/run_manifest.json": "cd55fd9033c1d2c9aeb37f154c34c607c2e3b9d1dbe3c6b125ac87aa0c4907a8",
+    "outputs/task_memory_replicates/balanced_seed2026/continual_metrics.json": "8984bdf93c2202e601699db04b6f76db4df072b7ab87801e0dd498cd846fa943",
+    "outputs/task_memory_replicates/balanced_seed2026/task_1_final.pth": "a4c5206e80fe3402f2cdd9b0b8702a177b53af0d6ae3bb948aa38f520f90ec13",
+    "outputs/task_memory_replicates/balanced_seed2026/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1",
+    "outputs/task_memory_replicates/mean_pca_seed2026/run_manifest.json": "4fa777dc65bd35998e48402e7d3b4eac1e69f5eae23aa76ab0066b83b6021f13",
+    "outputs/task_memory_replicates/mean_pca_seed2026/continual_metrics.json": "05f1db43f98e978d2e84c93201397579ee7cc3d19908146beb7f66a0c546ef1c",
+    "outputs/task_memory_replicates/mean_pca_seed2026/task_1_final.pth": "f84ac80cfab33ecfc8afd9ed599fad9cfd54706f9bd305123c4a9ed92256ec73",
+    "outputs/task_memory_replicates/mean_pca_seed2026/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1",
+    "outputs/task_balanced_b64/run_manifest.json": "95b4915411c4002435c5914a7a5a89a04f2a4cf553dc045a8a909d3e865b968e",
+    "outputs/task_balanced_b64/continual_metrics.json": "ab21cc0dec0e9697a409509aca35a893c801fbecb63c2396a932086b67c9dc3c",
+    "outputs/task_balanced_b64/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1",
+    "outputs/task_mean_pca_b64/run_manifest.json": "3cab98f4ac11127f08956194405a57e34b730dca5e93d5fd564c917d7b5d308b",
+    "outputs/task_mean_pca_b64/continual_metrics.json": "772ac60ec2d6b14382aefab26a7393be4965f4cfcfd1a960d0ed7d3f60cf6977",
+    "outputs/task_mean_pca_b64/task_1_final.pth": "8dec0e2fe8f1eab9b2f59ef064e5235c430febc22e4c6955c7debcc8b344e538",
+    "outputs/task_mean_pca_b64/status.json": "68c8808d3176b84d38447eb505dc7cb86ba976c9e49340e6f145555286749cb1"
+  },
+  "shared_core_code_sha256": {
+    "src/models/task_memory.py": "6a63ec24a1d92d7a2fcf5887824b7620f944f7e3527b9d0e75efe7203921cf2b",
+    "src/models/odr_lora.py": "21c0c45f5a9ea55b89e1bd20dc78d148f25d0ffab492a35a7b41d387b92dd362",
+    "src/models/restoration_net.py": "ea749b5868d3eae72038e5ce91cfd4f5aea7d2f3c9c8a4e0e9fbcbb59c3e05bc",
+    "src/trainers/task_balanced_trainer.py": "ffb4011c76c4588fb83df119b44f824b56347234b7a19006bbe5b2f97136f2b2",
+    "src/trainers/memory_source_trainer.py": "018c972bfff9a012bcc845208e959d0dec1baf4333680ec6d83453f81e444af6",
+    "src/trainers/clean_sequence_trainer.py": "d69e35cb2244a2d702e84be2db498dd874e247bea2079b7c2783650102c506f4"
+  }
+}
