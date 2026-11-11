@@ -160,3 +160,21 @@
 - `outputs/task_replicate_smoke_20261110/mean_pca_seed7/task_1_final.pth` (110188192 bytes)
 - `outputs/task_replicate_smoke_20261110/mean_pca_seed7/task_2_best.pth` (129716726 bytes)
 - `outputs/task_replicate_smoke_20261110/mean_pca_seed7/task_2_final.pth` (131916346 bytes)
+
+## 本次新增去噪冒烟的收尾清理
+
+两组均完成后，将本次 10 个 smoke 权重、共 1.2186 GiB 移入同一系统回收站。
+只保留日志、运行协议、历史、测试、摘要/GPM诊断；不将冒烟权重当正式续训源。
+
+- `outputs/task_memory_extension_smoke_20261111/balanced/latest.pth` (153974484 bytes)
+- `outputs/task_memory_extension_smoke_20261111/balanced/merged.pth` (62264238 bytes)
+- `outputs/task_memory_extension_smoke_20261111/balanced/task_2_final.pth` (132248954 bytes)
+- `outputs/task_memory_extension_smoke_20261111/balanced/task_3_best.pth` (151778256 bytes)
+- `outputs/task_memory_extension_smoke_20261111/balanced/task_3_final.pth` (153974484 bytes)
+- `outputs/task_memory_extension_smoke_20261111/mean_pca/latest.pth` (153974420 bytes)
+- `outputs/task_memory_extension_smoke_20261111/mean_pca/merged.pth` (62264238 bytes)
+- `outputs/task_memory_extension_smoke_20261111/mean_pca/task_2_final.pth` (132248954 bytes)
+- `outputs/task_memory_extension_smoke_20261111/mean_pca/task_3_best.pth` (151778256 bytes)
+- `outputs/task_memory_extension_smoke_20261111/mean_pca/task_3_final.pth` (153974420 bytes)
+
+合计清理 131 个临时权重，共 13.5089 GiB，均可从回收站恢复；未清空回收站。

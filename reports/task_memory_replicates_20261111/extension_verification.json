@@ -1,0 +1,140 @@
+{
+  "date": "2026-11-11",
+  "cpu_suite": {
+    "tests": 85,
+    "passed": 84,
+    "skipped_opt_in_gpu": 1
+  },
+  "gpu_epoch_resume_test": "1 passed; synthetic small model, strict state equality and memory devices",
+  "formal_training_started": false,
+  "capacity_note": "Real-data smoke batch2, not a new batch64 memory-capacity benchmark",
+  "smoke_note": "One update and one image per eval set. Code later only strengthened source GPM/resume-version validation; final code additionally passed unit tests and GPU epoch resume.",
+  "runs": {
+    "balanced": {
+      "status": {
+        "status": "complete",
+        "stopped_after": "denoise",
+        "smoke_test": true
+      },
+      "source": {
+        "version": 1,
+        "source": "/media/zhappy-701/新加卷/odr-lora/odr-lora-restoration-main/outputs/task_balanced_b64/task_2_final.pth",
+        "source_sha256": "abbeb5db6a60e0ae5f2dfdb54f1344001c5db5fef6d0ca8bddb6c381fc2f58a3",
+        "source_physical_sha256": "5168adab0b8857531636dfe57bde75893b12c31cb5bc1e54e08ae9eabfff6a20",
+        "source_bank_sha256": "b41262b9104a37330a8badbf5e1e834794d58951fc586e3983e372bb763106cd",
+        "parent_split_sha256": "77c9393763236476f129133a7c954fa0b5b22dac1b4ca05e56481c0631eb87de",
+        "mode": "balanced",
+        "replay": false,
+        "rebuild_old_summaries": false,
+        "selection": "current task validation PSNR only",
+        "evaluation": "unchanged old tasks; AWGN25 fixed noise; new tasks tile512 overlap64 / patch LPIPS",
+        "scope": "sequence continuation from each arm own Haze4K model, not a common-weight boundary ablation"
+      },
+      "boundary_import": {
+        "source_sha256": "abbeb5db6a60e0ae5f2dfdb54f1344001c5db5fef6d0ca8bddb6c381fc2f58a3",
+        "physical_sha256": "5168adab0b8857531636dfe57bde75893b12c31cb5bc1e54e08ae9eabfff6a20",
+        "bank_sha256": "b41262b9104a37330a8badbf5e1e834794d58951fc586e3983e372bb763106cd",
+        "historical_tasks": [
+          "lowlight",
+          "rainh",
+          "dehaze"
+        ],
+        "mode": "balanced",
+        "no_old_train": true,
+        "gpm_reselected": false,
+        "note": "Imported the selected arm physical weights, GPM and all frozen summaries unchanged"
+      },
+      "smoke_code_sha256": {
+        "src/scripts/train_task_memory_extension.py": "2741a2693f0dca02f17194235f731eeb112b57c80c0858a5cc629a11aa01cd05",
+        "src/trainers/task_memory_extension_trainer.py": "72f6b42c6739342769f857236bf67c89d00430ed2be5d64de4ae0be72d0b11c6",
+        "src/trainers/task_balanced_trainer.py": "ffb4011c76c4588fb83df119b44f824b56347234b7a19006bbe5b2f97136f2b2",
+        "src/trainers/five_task_trainer.py": "22e26dc24fe5aa2f70bbe93915d9c4d1def927a0c3d9fc67a4fc3bbeaef08ca3",
+        "src/trainers/clean_sequence_trainer.py": "d69e35cb2244a2d702e84be2db498dd874e247bea2079b7c2783650102c506f4",
+        "src/trainers/memory_source_trainer.py": "018c972bfff9a012bcc845208e959d0dec1baf4333680ec6d83453f81e444af6",
+        "src/trainers/incremental_trainer.py": "9bdf7138c8aafe92486a4446f62c51a818122b76ece35a4a6a370c04a92a875a",
+        "src/data/five_task_protocol.py": "839883c9b42cfc59919b80759ca219c7dd12ed12419eea97139e56dd4cc3f321",
+        "src/data/clean_protocol.py": "76978a7432c61e984b3a714f0e645b967949b0a9fe6bf76b2931d4e6397ecb1e",
+        "src/data/transforms.py": "245f8d2ca0167020e9149093d2cbadbff556c0a2b856b8cd94b283a7b6f4ff39",
+        "src/data/datasets.py": "69e04be24f7fbca6ebadfbc95c03fca902c718895115a331d04c88983206c169",
+        "src/models/task_memory.py": "6a63ec24a1d92d7a2fcf5887824b7620f944f7e3527b9d0e75efe7203921cf2b",
+        "src/models/backbone.py": "fa14ed2bfef87941d2b06e1196bc7f49a38be1c9dc37760123910cf959ee743f",
+        "src/models/odr_lora.py": "21c0c45f5a9ea55b89e1bd20dc78d148f25d0ffab492a35a7b41d387b92dd362",
+        "src/models/restoration_net.py": "ea749b5868d3eae72038e5ce91cfd4f5aea7d2f3c9c8a4e0e9fbcbb59c3e05bc",
+        "src/models/dual_gpm.py": "96037d406990d4f427406925b0d14d5e357a650e500af8ebc70ce9c42427b428",
+        "src/utils/checkpoint.py": "326dc1a916857d271c50f30dcf69b4c07c921d2ca75a11b81cf779d31c6f904e",
+        "src/utils/training_state.py": "379284857831bbc3464eae1831bb3ec64d403858a4187f4b9222166c26168bdc",
+        "src/utils/inference.py": "7c1d1964994eac0d3084c95b466bfc3c3d5a78b53dac7338526274e0b2ee15d0",
+        "src/utils/metrics.py": "e8c0d3e481b2a7490858ff106997811f8fe3850c24a9439241ec5a3fd007175d",
+        "src/losses/losses.py": "7853e39b6b87b8cd9eedfb7511fe2cef64cd2ee03b6489be0a5d2b03bfc6b86f"
+      },
+      "task_count": 4,
+      "sketch_bytes": 34459024,
+      "protected_basis_bytes": 8696676,
+      "merge_max_error": 5.960464477539062e-7,
+      "merge_mean_error": 8.139851104260742e-8
+    },
+    "mean_pca": {
+      "status": {
+        "status": "complete",
+        "stopped_after": "denoise",
+        "smoke_test": true
+      },
+      "source": {
+        "version": 1,
+        "source": "/media/zhappy-701/新加卷/odr-lora/odr-lora-restoration-main/outputs/task_mean_pca_b64/task_2_final.pth",
+        "source_sha256": "83b47cae6daefb05c1d2e33d416e3ca28b7b0159a3b8f8c15c5e0bb602912680",
+        "source_physical_sha256": "3bdeb94d4d0368ff35601275ef7d0b1b0e2bca7768ff9cd7914d08e664504b3d",
+        "source_bank_sha256": "91b3d405ecb05640550df2aec47cb89abd7ffca1b02a6935d0296f68a7455075",
+        "parent_split_sha256": "77c9393763236476f129133a7c954fa0b5b22dac1b4ca05e56481c0631eb87de",
+        "mode": "mean_pca",
+        "replay": false,
+        "rebuild_old_summaries": false,
+        "selection": "current task validation PSNR only",
+        "evaluation": "unchanged old tasks; AWGN25 fixed noise; new tasks tile512 overlap64 / patch LPIPS",
+        "scope": "sequence continuation from each arm own Haze4K model, not a common-weight boundary ablation"
+      },
+      "boundary_import": {
+        "source_sha256": "83b47cae6daefb05c1d2e33d416e3ca28b7b0159a3b8f8c15c5e0bb602912680",
+        "physical_sha256": "3bdeb94d4d0368ff35601275ef7d0b1b0e2bca7768ff9cd7914d08e664504b3d",
+        "bank_sha256": "91b3d405ecb05640550df2aec47cb89abd7ffca1b02a6935d0296f68a7455075",
+        "historical_tasks": [
+          "lowlight",
+          "rainh",
+          "dehaze"
+        ],
+        "mode": "mean_pca",
+        "no_old_train": true,
+        "gpm_reselected": false,
+        "note": "Imported the selected arm physical weights, GPM and all frozen summaries unchanged"
+      },
+      "smoke_code_sha256": {
+        "src/scripts/train_task_memory_extension.py": "2741a2693f0dca02f17194235f731eeb112b57c80c0858a5cc629a11aa01cd05",
+        "src/trainers/task_memory_extension_trainer.py": "72f6b42c6739342769f857236bf67c89d00430ed2be5d64de4ae0be72d0b11c6",
+        "src/trainers/task_balanced_trainer.py": "ffb4011c76c4588fb83df119b44f824b56347234b7a19006bbe5b2f97136f2b2",
+        "src/trainers/five_task_trainer.py": "22e26dc24fe5aa2f70bbe93915d9c4d1def927a0c3d9fc67a4fc3bbeaef08ca3",
+        "src/trainers/clean_sequence_trainer.py": "d69e35cb2244a2d702e84be2db498dd874e247bea2079b7c2783650102c506f4",
+        "src/trainers/memory_source_trainer.py": "018c972bfff9a012bcc845208e959d0dec1baf4333680ec6d83453f81e444af6",
+        "src/trainers/incremental_trainer.py": "9bdf7138c8aafe92486a4446f62c51a818122b76ece35a4a6a370c04a92a875a",
+        "src/data/five_task_protocol.py": "839883c9b42cfc59919b80759ca219c7dd12ed12419eea97139e56dd4cc3f321",
+        "src/data/clean_protocol.py": "76978a7432c61e984b3a714f0e645b967949b0a9fe6bf76b2931d4e6397ecb1e",
+        "src/data/transforms.py": "245f8d2ca0167020e9149093d2cbadbff556c0a2b856b8cd94b283a7b6f4ff39",
+        "src/data/datasets.py": "69e04be24f7fbca6ebadfbc95c03fca902c718895115a331d04c88983206c169",
+        "src/models/task_memory.py": "6a63ec24a1d92d7a2fcf5887824b7620f944f7e3527b9d0e75efe7203921cf2b",
+        "src/models/backbone.py": "fa14ed2bfef87941d2b06e1196bc7f49a38be1c9dc37760123910cf959ee743f",
+        "src/models/odr_lora.py": "21c0c45f5a9ea55b89e1bd20dc78d148f25d0ffab492a35a7b41d387b92dd362",
+        "src/models/restoration_net.py": "ea749b5868d3eae72038e5ce91cfd4f5aea7d2f3c9c8a4e0e9fbcbb59c3e05bc",
+        "src/models/dual_gpm.py": "96037d406990d4f427406925b0d14d5e357a650e500af8ebc70ce9c42427b428",
+        "src/utils/checkpoint.py": "326dc1a916857d271c50f30dcf69b4c07c921d2ca75a11b81cf779d31c6f904e",
+        "src/utils/training_state.py": "379284857831bbc3464eae1831bb3ec64d403858a4187f4b9222166c26168bdc",
+        "src/utils/inference.py": "7c1d1964994eac0d3084c95b466bfc3c3d5a78b53dac7338526274e0b2ee15d0",
+        "src/utils/metrics.py": "e8c0d3e481b2a7490858ff106997811f8fe3850c24a9439241ec5a3fd007175d",
+        "src/losses/losses.py": "7853e39b6b87b8cd9eedfb7511fe2cef64cd2ee03b6489be0a5d2b03bfc6b86f"
+      },
+      "task_count": 4,
+      "sketch_bytes": 34459024,
+      "protected_basis_bytes": 8696676,
+      "merge_max_error": 5.960464477539062e-7,
+      "merge_mean_error": 7.65799654800503e-8
+    }
+  }
+}

@@ -2,6 +2,8 @@
 
 固定RainH边界、补seed7/2026的配对复验入口与汇总，参见 [TASK_MEMORY_REPLICATES.md](TASK_MEMORY_REPLICATES.md)。
 
+三组复验已完成；从各自Haze4K断点接续去噪的独立入口，参见 [TASK_MEMORY_EXTENSION.md](TASK_MEMORY_EXTENSION.md)。
+
 新入口：`src/scripts/train_task_balanced.py`。
 只改GPM记忆构造，不改stable_v1骨干、尺度秩、LoRA插入位置、优化损失或推理公式。
 关闭分支B、回放、教师、蒸馏与范数上限，不同时叠加其他改进。
